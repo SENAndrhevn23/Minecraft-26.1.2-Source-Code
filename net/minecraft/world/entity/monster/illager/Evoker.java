@@ -1,0 +1,347 @@
+package net.minecraft.world.entity.monster.illager;
+
+import java.util.List;
+import java.util.Objects;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.SpawnGroupData;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.AvoidEntityGoal;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.RandomStrollGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+import net.minecraft.world.entity.animal.golem.IronGolem;
+import net.minecraft.world.entity.animal.sheep.Sheep;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.monster.Vex;
+import net.minecraft.world.entity.monster.creaking.Creaking;
+import net.minecraft.world.entity.npc.villager.AbstractVillager;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.EvokerFangs;
+import net.minecraft.world.entity.raid.Raider;
+import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.level.gamerules.GameRules;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
+import net.minecraft.world.scores.PlayerTeam;
+import org.jspecify.annotations.Nullable;
+
+public class Evoker extends SpellcasterIllager {
+   private @Nullable Sheep wololoTarget;
+
+   public Evoker(final EntityType<? extends Evoker> type, final Level level) {
+      super(type, level);
+      this.xpReward = 10;
+   }
+
+   protected void registerGoals() {
+      super.registerGoals();
+      this.goalSelector.addGoal(0, new FloatGoal(this));
+      this.goalSelector.addGoal(1, new EvokerCastingSpellGoal());
+      this.goalSelector.addGoal(2, new AvoidEntityGoal(this, Player.class, 8.0F, 0.6, (double)1.0F));
+      this.goalSelector.addGoal(3, new AvoidEntityGoal(this, Creaking.class, 8.0F, 0.6, (double)1.0F));
+      this.goalSelector.addGoal(4, new EvokerSummonSpellGoal());
+      this.goalSelector.addGoal(5, new EvokerAttackSpellGoal());
+      this.goalSelector.addGoal(6, new EvokerWololoSpellGoal());
+      this.goalSelector.addGoal(8, new RandomStrollGoal(this, 0.6));
+      this.goalSelector.addGoal(9, new LookAtPlayerGoal(this, Player.class, 3.0F, 1.0F));
+      this.goalSelector.addGoal(10, new LookAtPlayerGoal(this, Mob.class, 8.0F));
+      this.targetSelector.addGoal(1, (new HurtByTargetGoal(this, new Class[]{Raider.class})).setAlertOthers());
+      this.targetSelector.addGoal(2, (new NearestAttackableTargetGoal(this, Player.class, true)).setUnseenMemoryTicks(300));
+      this.targetSelector.addGoal(3, (new NearestAttackableTargetGoal(this, AbstractVillager.class, false)).setUnseenMemoryTicks(300));
+      this.targetSelector.addGoal(3, new NearestAttackableTargetGoal(this, IronGolem.class, false));
+   }
+
+   public static AttributeSupplier.Builder createAttributes() {
+      return Monster.createMonsterAttributes().add(Attributes.MOVEMENT_SPEED, (double)0.5F).add(Attributes.FOLLOW_RANGE, (double)12.0F).add(Attributes.MAX_HEALTH, (double)24.0F);
+   }
+
+   public SoundEvent getCelebrateSound() {
+      return SoundEvents.EVOKER_CELEBRATE;
+   }
+
+   protected boolean considersEntityAsAlly(final Entity other) {
+      if (other == this) {
+         return true;
+      } else if (super.considersEntityAsAlly(other)) {
+         return true;
+      } else {
+         if (other instanceof Vex) {
+            Vex vex = (Vex)other;
+            if (vex.getOwner() != null) {
+               return this.considersEntityAsAlly(vex.getOwner());
+            }
+         }
+
+         return false;
+      }
+   }
+
+   protected SoundEvent getAmbientSound() {
+      return SoundEvents.EVOKER_AMBIENT;
+   }
+
+   protected SoundEvent getDeathSound() {
+      return SoundEvents.EVOKER_DEATH;
+   }
+
+   protected SoundEvent getHurtSound(final DamageSource source) {
+      return SoundEvents.EVOKER_HURT;
+   }
+
+   private void setWololoTarget(final @Nullable Sheep wololoTarget) {
+      this.wololoTarget = wololoTarget;
+   }
+
+   private @Nullable Sheep getWololoTarget() {
+      return this.wololoTarget;
+   }
+
+   protected SoundEvent getCastingSoundEvent() {
+      return SoundEvents.EVOKER_CAST_SPELL;
+   }
+
+   public void applyRaidBuffs(final ServerLevel level, final int wave, final boolean isCaptain) {
+   }
+
+   private class EvokerCastingSpellGoal extends SpellcasterIllager.SpellcasterCastingSpellGoal {
+      private EvokerCastingSpellGoal() {
+         Objects.requireNonNull(Evoker.this);
+         super();
+      }
+
+      public void tick() {
+         if (Evoker.this.getTarget() != null) {
+            Evoker.this.getLookControl().setLookAt(Evoker.this.getTarget(), (float)Evoker.this.getMaxHeadYRot(), (float)Evoker.this.getMaxHeadXRot());
+         } else if (Evoker.this.getWololoTarget() != null) {
+            Evoker.this.getLookControl().setLookAt(Evoker.this.getWololoTarget(), (float)Evoker.this.getMaxHeadYRot(), (float)Evoker.this.getMaxHeadXRot());
+         }
+
+      }
+   }
+
+   private class EvokerAttackSpellGoal extends SpellcasterIllager.SpellcasterUseSpellGoal {
+      private EvokerAttackSpellGoal() {
+         Objects.requireNonNull(Evoker.this);
+         super();
+      }
+
+      protected int getCastingTime() {
+         return 40;
+      }
+
+      protected int getCastingInterval() {
+         return 100;
+      }
+
+      protected void performSpellCasting() {
+         LivingEntity target = Evoker.this.getTarget();
+         double minY = Math.min(target.getY(), Evoker.this.getY());
+         double maxY = Math.max(target.getY(), Evoker.this.getY()) + (double)1.0F;
+         float angleTowardsTarget = (float)Mth.atan2(target.getZ() - Evoker.this.getZ(), target.getX() - Evoker.this.getX());
+         if (Evoker.this.distanceToSqr(target) < (double)9.0F) {
+            for(int i = 0; i < 5; ++i) {
+               float angle = angleTowardsTarget + (float)i * (float)Math.PI * 0.4F;
+               this.createSpellEntity(Evoker.this.getX() + (double)Mth.cos((double)angle) * (double)1.5F, Evoker.this.getZ() + (double)Mth.sin((double)angle) * (double)1.5F, minY, maxY, angle, 0);
+            }
+
+            for(int i = 0; i < 8; ++i) {
+               float angle = angleTowardsTarget + (float)i * (float)Math.PI * 2.0F / 8.0F + 1.2566371F;
+               this.createSpellEntity(Evoker.this.getX() + (double)Mth.cos((double)angle) * (double)2.5F, Evoker.this.getZ() + (double)Mth.sin((double)angle) * (double)2.5F, minY, maxY, angle, 3);
+            }
+         } else {
+            for(int i = 0; i < 16; ++i) {
+               double reach = (double)1.25F * (double)(i + 1);
+               int spellSpeed = 1 * i;
+               this.createSpellEntity(Evoker.this.getX() + (double)Mth.cos((double)angleTowardsTarget) * reach, Evoker.this.getZ() + (double)Mth.sin((double)angleTowardsTarget) * reach, minY, maxY, angleTowardsTarget, spellSpeed);
+            }
+         }
+
+      }
+
+      private void createSpellEntity(final double x, final double z, final double minY, final double maxY, final float angle, final int delayTicks) {
+         BlockPos pos = BlockPos.containing(x, maxY, z);
+         boolean success = false;
+         double topOffset = (double)0.0F;
+
+         do {
+            BlockPos below = pos.below();
+            BlockState belowState = Evoker.this.level().getBlockState(below);
+            if (belowState.isFaceSturdy(Evoker.this.level(), below, Direction.UP)) {
+               if (!Evoker.this.level().isEmptyBlock(pos)) {
+                  BlockState blockState = Evoker.this.level().getBlockState(pos);
+                  VoxelShape shape = blockState.getCollisionShape(Evoker.this.level(), pos);
+                  if (!shape.isEmpty()) {
+                     topOffset = shape.max(Direction.Axis.Y);
+                  }
+               }
+
+               success = true;
+               break;
+            }
+
+            pos = pos.below();
+         } while(pos.getY() >= Mth.floor(minY) - 1);
+
+         if (success) {
+            Evoker.this.level().addFreshEntity(new EvokerFangs(Evoker.this.level(), x, (double)pos.getY() + topOffset, z, angle, delayTicks, Evoker.this));
+            Evoker.this.level().gameEvent(GameEvent.ENTITY_PLACE, new Vec3(x, (double)pos.getY() + topOffset, z), GameEvent.Context.of((Entity)Evoker.this));
+         }
+
+      }
+
+      protected SoundEvent getSpellPrepareSound() {
+         return SoundEvents.EVOKER_PREPARE_ATTACK;
+      }
+
+      protected SpellcasterIllager.IllagerSpell getSpell() {
+         return SpellcasterIllager.IllagerSpell.FANGS;
+      }
+   }
+
+   private class EvokerSummonSpellGoal extends SpellcasterIllager.SpellcasterUseSpellGoal {
+      private final TargetingConditions vexCountTargeting;
+
+      private EvokerSummonSpellGoal() {
+         Objects.requireNonNull(Evoker.this);
+         super();
+         this.vexCountTargeting = TargetingConditions.forNonCombat().range((double)16.0F).ignoreLineOfSight().ignoreInvisibilityTesting();
+      }
+
+      public boolean canUse() {
+         if (!super.canUse()) {
+            return false;
+         } else {
+            int vexes = getServerLevel(Evoker.this.level()).getNearbyEntities(Vex.class, this.vexCountTargeting, Evoker.this, Evoker.this.getBoundingBox().inflate((double)16.0F)).size();
+            return Evoker.this.random.nextInt(8) + 1 > vexes;
+         }
+      }
+
+      protected int getCastingTime() {
+         return 100;
+      }
+
+      protected int getCastingInterval() {
+         return 340;
+      }
+
+      protected void performSpellCasting() {
+         ServerLevel serverLevel = (ServerLevel)Evoker.this.level();
+         PlayerTeam evokerTeam = Evoker.this.getTeam();
+
+         for(int i = 0; i < 3; ++i) {
+            BlockPos pos = Evoker.this.blockPosition().offset(-2 + Evoker.this.random.nextInt(5), 1, -2 + Evoker.this.random.nextInt(5));
+            Vex vex = EntityType.VEX.create(Evoker.this.level(), EntitySpawnReason.MOB_SUMMONED);
+            if (vex != null) {
+               vex.snapTo(pos, 0.0F, 0.0F);
+               vex.finalizeSpawn(serverLevel, serverLevel.getCurrentDifficultyAt(pos), EntitySpawnReason.MOB_SUMMONED, (SpawnGroupData)null);
+               vex.setOwner(Evoker.this);
+               vex.setBoundOrigin(pos);
+               vex.setLimitedLife(20 * (30 + Evoker.this.random.nextInt(90)));
+               if (evokerTeam != null) {
+                  serverLevel.getScoreboard().addPlayerToTeam(vex.getScoreboardName(), evokerTeam);
+               }
+
+               serverLevel.addFreshEntityWithPassengers(vex);
+               serverLevel.gameEvent(GameEvent.ENTITY_PLACE, pos, GameEvent.Context.of((Entity)Evoker.this));
+            }
+         }
+
+      }
+
+      protected SoundEvent getSpellPrepareSound() {
+         return SoundEvents.EVOKER_PREPARE_SUMMON;
+      }
+
+      protected SpellcasterIllager.IllagerSpell getSpell() {
+         return SpellcasterIllager.IllagerSpell.SUMMON_VEX;
+      }
+   }
+
+   public class EvokerWololoSpellGoal extends SpellcasterIllager.SpellcasterUseSpellGoal {
+      private final TargetingConditions wololoTargeting;
+
+      public EvokerWololoSpellGoal() {
+         Objects.requireNonNull(Evoker.this);
+         super();
+         this.wololoTargeting = TargetingConditions.forNonCombat().range((double)16.0F).selector((target, level) -> ((Sheep)target).getColor() == DyeColor.BLUE);
+      }
+
+      public boolean canUse() {
+         if (Evoker.this.getTarget() != null) {
+            return false;
+         } else if (Evoker.this.isCastingSpell()) {
+            return false;
+         } else if (Evoker.this.tickCount < this.nextAttackTickCount) {
+            return false;
+         } else {
+            ServerLevel level = getServerLevel(Evoker.this.level());
+            if (!(Boolean)level.getGameRules().get(GameRules.MOB_GRIEFING)) {
+               return false;
+            } else {
+               List<Sheep> entities = level.getNearbyEntities(Sheep.class, this.wololoTargeting, Evoker.this, Evoker.this.getBoundingBox().inflate((double)16.0F, (double)4.0F, (double)16.0F));
+               if (entities.isEmpty()) {
+                  return false;
+               } else {
+                  Evoker.this.setWololoTarget((Sheep)entities.get(Evoker.this.random.nextInt(entities.size())));
+                  return true;
+               }
+            }
+         }
+      }
+
+      public boolean canContinueToUse() {
+         return Evoker.this.getWololoTarget() != null && this.attackWarmupDelay > 0;
+      }
+
+      public void stop() {
+         super.stop();
+         Evoker.this.setWololoTarget((Sheep)null);
+      }
+
+      protected void performSpellCasting() {
+         Sheep wololoTarget = Evoker.this.getWololoTarget();
+         if (wololoTarget != null && wololoTarget.isAlive()) {
+            wololoTarget.setColor(DyeColor.RED);
+         }
+
+      }
+
+      protected int getCastWarmupTime() {
+         return 40;
+      }
+
+      protected int getCastingTime() {
+         return 60;
+      }
+
+      protected int getCastingInterval() {
+         return 140;
+      }
+
+      protected SoundEvent getSpellPrepareSound() {
+         return SoundEvents.EVOKER_PREPARE_WOLOLO;
+      }
+
+      protected SpellcasterIllager.IllagerSpell getSpell() {
+         return SpellcasterIllager.IllagerSpell.WOLOLO;
+      }
+   }
+}

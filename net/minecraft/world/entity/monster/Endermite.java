@@ -1,0 +1,122 @@
+package net.minecraft.world.entity.monster;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.ClimbOnTopOfPowderSnowGoal;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+
+public class Endermite extends Monster {
+   private static final int MAX_LIFE = 2400;
+   private static final int DEFAULT_LIFE = 0;
+   private int life = 0;
+
+   public Endermite(final EntityType<? extends Endermite> type, final Level level) {
+      super(type, level);
+      this.xpReward = 3;
+   }
+
+   protected void registerGoals() {
+      this.goalSelector.addGoal(1, new FloatGoal(this));
+      this.goalSelector.addGoal(1, new ClimbOnTopOfPowderSnowGoal(this, this.level()));
+      this.goalSelector.addGoal(2, new MeleeAttackGoal(this, (double)1.0F, false));
+      this.goalSelector.addGoal(3, new WaterAvoidingRandomStrollGoal(this, (double)1.0F));
+      this.goalSelector.addGoal(7, new LookAtPlayerGoal(this, Player.class, 8.0F));
+      this.goalSelector.addGoal(8, new RandomLookAroundGoal(this));
+      this.targetSelector.addGoal(1, (new HurtByTargetGoal(this, new Class[0])).setAlertOthers());
+      this.targetSelector.addGoal(2, new NearestAttackableTargetGoal(this, Player.class, true));
+   }
+
+   public static AttributeSupplier.Builder createAttributes() {
+      return Monster.createMonsterAttributes().add(Attributes.MAX_HEALTH, (double)8.0F).add(Attributes.MOVEMENT_SPEED, (double)0.25F).add(Attributes.ATTACK_DAMAGE, (double)2.0F);
+   }
+
+   protected Entity.MovementEmission getMovementEmission() {
+      return Entity.MovementEmission.EVENTS;
+   }
+
+   protected SoundEvent getAmbientSound() {
+      return SoundEvents.ENDERMITE_AMBIENT;
+   }
+
+   protected SoundEvent getHurtSound(final DamageSource source) {
+      return SoundEvents.ENDERMITE_HURT;
+   }
+
+   protected SoundEvent getDeathSound() {
+      return SoundEvents.ENDERMITE_DEATH;
+   }
+
+   protected void playStepSound(final BlockPos pos, final BlockState blockState) {
+      this.playSound(SoundEvents.ENDERMITE_STEP, 0.15F, 1.0F);
+   }
+
+   protected void readAdditionalSaveData(final ValueInput input) {
+      super.readAdditionalSaveData(input);
+      this.life = input.getIntOr("Lifetime", 0);
+   }
+
+   protected void addAdditionalSaveData(final ValueOutput output) {
+      super.addAdditionalSaveData(output);
+      output.putInt("Lifetime", this.life);
+   }
+
+   public void tick() {
+      this.yBodyRot = this.getYRot();
+      super.tick();
+   }
+
+   public void setYBodyRot(final float yBodyRot) {
+      this.setYRot(yBodyRot);
+      super.setYBodyRot(yBodyRot);
+   }
+
+   public void aiStep() {
+      super.aiStep();
+      if (this.level().isClientSide()) {
+         for(int i = 0; i < 2; ++i) {
+            this.level().addParticle(ParticleTypes.PORTAL, this.getRandomX((double)0.5F), this.getRandomY(), this.getRandomZ((double)0.5F), (this.random.nextDouble() - (double)0.5F) * (double)2.0F, -this.random.nextDouble(), (this.random.nextDouble() - (double)0.5F) * (double)2.0F);
+         }
+      } else {
+         if (!this.isPersistenceRequired()) {
+            ++this.life;
+         }
+
+         if (this.life >= 2400) {
+            this.discard();
+         }
+      }
+
+   }
+
+   public static boolean checkEndermiteSpawnRules(final EntityType<Endermite> type, final LevelAccessor level, final EntitySpawnReason spawnReason, final BlockPos pos, final RandomSource random) {
+      if (!checkAnyLightMonsterSpawnRules(type, level, spawnReason, pos, random)) {
+         return false;
+      } else if (EntitySpawnReason.isSpawner(spawnReason)) {
+         return true;
+      } else {
+         Player nearestPlayer = level.getNearestPlayer((double)pos.getX() + (double)0.5F, (double)pos.getY() + (double)0.5F, (double)pos.getZ() + (double)0.5F, (double)5.0F, true);
+         return nearestPlayer == null;
+      }
+   }
+}

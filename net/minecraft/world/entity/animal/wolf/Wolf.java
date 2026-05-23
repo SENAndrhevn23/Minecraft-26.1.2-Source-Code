@@ -1,0 +1,692 @@
+package net.minecraft.world.entity.animal.wolf;
+
+import java.util.Objects;
+import java.util.Optional;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
+import net.minecraft.core.component.DataComponentGetter;
+import net.minecraft.core.component.DataComponentType;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.particles.ItemParticleOption;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.util.TimeUtil;
+import net.minecraft.util.valueproviders.UniformInt;
+import net.minecraft.world.DifficultyInstance;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.AgeableMob;
+import net.minecraft.world.entity.Crackiness;
+import net.minecraft.world.entity.EntityReference;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.NeutralMob;
+import net.minecraft.world.entity.SpawnGroupData;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.AvoidEntityGoal;
+import net.minecraft.world.entity.ai.goal.BegGoal;
+import net.minecraft.world.entity.ai.goal.BreedGoal;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.FollowOwnerGoal;
+import net.minecraft.world.entity.ai.goal.LeapAtTargetGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.ai.goal.SitWhenOrderedToGoal;
+import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NonTameRandomTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.OwnerHurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.OwnerHurtTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.ResetUniversalAngerTargetGoal;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.animal.equine.AbstractHorse;
+import net.minecraft.world.entity.animal.equine.Llama;
+import net.minecraft.world.entity.animal.turtle.Turtle;
+import net.minecraft.world.entity.decoration.ArmorStand;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Ghast;
+import net.minecraft.world.entity.monster.skeleton.AbstractSkeleton;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.variant.SpawnContext;
+import net.minecraft.world.entity.variant.VariantUtils;
+import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.level.pathfinder.PathType;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
+
+public class Wolf extends TamableAnimal implements NeutralMob {
+   private static final EntityDataAccessor<Boolean> DATA_INTERESTED_ID;
+   private static final EntityDataAccessor<Integer> DATA_COLLAR_COLOR;
+   private static final EntityDataAccessor<Long> DATA_ANGER_END_TIME;
+   private static final EntityDataAccessor<Holder<WolfVariant>> DATA_VARIANT_ID;
+   private static final EntityDataAccessor<Holder<WolfSoundVariant>> DATA_SOUND_VARIANT_ID;
+   public static final TargetingConditions.Selector PREY_SELECTOR;
+   private static final float START_HEALTH = 8.0F;
+   private static final float TAME_HEALTH = 40.0F;
+   private static final float ARMOR_REPAIR_UNIT = 0.125F;
+   public static final float DEFAULT_TAIL_ANGLE = ((float)Math.PI / 5F);
+   private static final DyeColor DEFAULT_COLLAR_COLOR;
+   private float interestedAngle;
+   private float interestedAngleO;
+   private boolean isWet;
+   private boolean isShaking;
+   private float shakeAnim;
+   private float shakeAnimO;
+   private static final UniformInt PERSISTENT_ANGER_TIME;
+   private @Nullable EntityReference<LivingEntity> persistentAngerTarget;
+
+   public Wolf(final EntityType<? extends Wolf> type, final Level level) {
+      super(type, level);
+      this.setTame(false, false);
+      this.setPathfindingMalus(PathType.POWDER_SNOW, -1.0F);
+      this.setPathfindingMalus(PathType.ON_TOP_OF_POWDER_SNOW, -1.0F);
+   }
+
+   protected void registerGoals() {
+      this.goalSelector.addGoal(1, new FloatGoal(this));
+      this.goalSelector.addGoal(1, new TamableAnimal.TamableAnimalPanicGoal((double)1.5F, DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES));
+      this.goalSelector.addGoal(2, new SitWhenOrderedToGoal(this));
+      this.goalSelector.addGoal(3, new WolfAvoidEntityGoal(this, Llama.class, 24.0F, (double)1.5F, (double)1.5F));
+      this.goalSelector.addGoal(4, new LeapAtTargetGoal(this, 0.4F));
+      this.goalSelector.addGoal(5, new MeleeAttackGoal(this, (double)1.0F, true));
+      this.goalSelector.addGoal(6, new FollowOwnerGoal(this, (double)1.0F, 10.0F, 2.0F));
+      this.goalSelector.addGoal(7, new BreedGoal(this, (double)1.0F));
+      this.goalSelector.addGoal(8, new WaterAvoidingRandomStrollGoal(this, (double)1.0F));
+      this.goalSelector.addGoal(9, new BegGoal(this, 8.0F));
+      this.goalSelector.addGoal(10, new LookAtPlayerGoal(this, Player.class, 8.0F));
+      this.goalSelector.addGoal(10, new RandomLookAroundGoal(this));
+      this.targetSelector.addGoal(1, new OwnerHurtByTargetGoal(this));
+      this.targetSelector.addGoal(2, new OwnerHurtTargetGoal(this));
+      this.targetSelector.addGoal(3, (new HurtByTargetGoal(this, new Class[0])).setAlertOthers());
+      this.targetSelector.addGoal(4, new NearestAttackableTargetGoal(this, Player.class, 10, true, false, this::isAngryAt));
+      this.targetSelector.addGoal(5, new NonTameRandomTargetGoal(this, Animal.class, false, PREY_SELECTOR));
+      this.targetSelector.addGoal(6, new NonTameRandomTargetGoal(this, Turtle.class, false, Turtle.BABY_ON_LAND_SELECTOR));
+      this.targetSelector.addGoal(7, new NearestAttackableTargetGoal(this, AbstractSkeleton.class, false));
+      this.targetSelector.addGoal(8, new ResetUniversalAngerTargetGoal(this, true));
+   }
+
+   public Identifier getTexture() {
+      WolfVariant variant = (WolfVariant)this.getVariant().value();
+      WolfVariant.AssetInfo assetInfo = this.isBaby() ? variant.babyInfo() : variant.adultInfo();
+      if (this.isTame()) {
+         return assetInfo.tame().texturePath();
+      } else {
+         return this.isAngry() ? assetInfo.angry().texturePath() : assetInfo.wild().texturePath();
+      }
+   }
+
+   private Holder<WolfVariant> getVariant() {
+      return (Holder)this.entityData.get(DATA_VARIANT_ID);
+   }
+
+   private void setVariant(final Holder<WolfVariant> variant) {
+      this.entityData.set(DATA_VARIANT_ID, variant);
+   }
+
+   private Holder<WolfSoundVariant> getSoundVariant() {
+      return (Holder)this.entityData.get(DATA_SOUND_VARIANT_ID);
+   }
+
+   private WolfSoundVariant.WolfSoundSet getSoundSet() {
+      return this.isBaby() ? ((WolfSoundVariant)this.getSoundVariant().value()).babySounds() : ((WolfSoundVariant)this.getSoundVariant().value()).adultSounds();
+   }
+
+   private void setSoundVariant(final Holder<WolfSoundVariant> soundVariant) {
+      this.entityData.set(DATA_SOUND_VARIANT_ID, soundVariant);
+   }
+
+   public <T> @Nullable T get(final DataComponentType<? extends T> type) {
+      if (type == DataComponents.WOLF_VARIANT) {
+         return (T)castComponentValue(type, this.getVariant());
+      } else if (type == DataComponents.WOLF_SOUND_VARIANT) {
+         return (T)castComponentValue(type, this.getSoundVariant());
+      } else {
+         return (T)(type == DataComponents.WOLF_COLLAR ? castComponentValue(type, this.getCollarColor()) : super.get(type));
+      }
+   }
+
+   protected void applyImplicitComponents(final DataComponentGetter components) {
+      this.applyImplicitComponentIfPresent(components, DataComponents.WOLF_VARIANT);
+      this.applyImplicitComponentIfPresent(components, DataComponents.WOLF_SOUND_VARIANT);
+      this.applyImplicitComponentIfPresent(components, DataComponents.WOLF_COLLAR);
+      super.applyImplicitComponents(components);
+   }
+
+   protected <T> boolean applyImplicitComponent(final DataComponentType<T> type, final T value) {
+      if (type == DataComponents.WOLF_VARIANT) {
+         this.setVariant((Holder)castComponentValue(DataComponents.WOLF_VARIANT, value));
+         return true;
+      } else if (type == DataComponents.WOLF_SOUND_VARIANT) {
+         this.setSoundVariant((Holder)castComponentValue(DataComponents.WOLF_SOUND_VARIANT, value));
+         return true;
+      } else if (type == DataComponents.WOLF_COLLAR) {
+         this.setCollarColor((DyeColor)castComponentValue(DataComponents.WOLF_COLLAR, value));
+         return true;
+      } else {
+         return super.applyImplicitComponent(type, value);
+      }
+   }
+
+   public static AttributeSupplier.Builder createAttributes() {
+      return Animal.createAnimalAttributes().add(Attributes.MOVEMENT_SPEED, (double)0.3F).add(Attributes.MAX_HEALTH, (double)8.0F).add(Attributes.ATTACK_DAMAGE, (double)4.0F);
+   }
+
+   protected void defineSynchedData(final SynchedEntityData.Builder entityData) {
+      super.defineSynchedData(entityData);
+      Registry<WolfSoundVariant> wolfSoundVariants = this.registryAccess().lookupOrThrow(Registries.WOLF_SOUND_VARIANT);
+      entityData.define(DATA_VARIANT_ID, VariantUtils.getDefaultOrAny(this.registryAccess(), WolfVariants.DEFAULT));
+      EntityDataAccessor var10001 = DATA_SOUND_VARIANT_ID;
+      Optional var10002 = wolfSoundVariants.get(WolfSoundVariants.CLASSIC);
+      Objects.requireNonNull(wolfSoundVariants);
+      entityData.define(var10001, (Holder)var10002.or(wolfSoundVariants::getAny).orElseThrow());
+      entityData.define(DATA_INTERESTED_ID, false);
+      entityData.define(DATA_COLLAR_COLOR, DEFAULT_COLLAR_COLOR.getId());
+      entityData.define(DATA_ANGER_END_TIME, -1L);
+   }
+
+   protected void playStepSound(final BlockPos pos, final BlockState blockState) {
+      this.playSound((SoundEvent)this.getSoundSet().stepSound().value(), 0.15F, 1.0F);
+   }
+
+   protected void addAdditionalSaveData(final ValueOutput output) {
+      super.addAdditionalSaveData(output);
+      output.store("CollarColor", DyeColor.LEGACY_ID_CODEC, this.getCollarColor());
+      VariantUtils.writeVariant(output, this.getVariant());
+      this.addPersistentAngerSaveData(output);
+      this.getSoundVariant().unwrapKey().ifPresent((soundVariant) -> output.store("sound_variant", ResourceKey.codec(Registries.WOLF_SOUND_VARIANT), soundVariant));
+   }
+
+   protected void readAdditionalSaveData(final ValueInput input) {
+      super.readAdditionalSaveData(input);
+      VariantUtils.readVariant(input, Registries.WOLF_VARIANT).ifPresent(this::setVariant);
+      this.setCollarColor((DyeColor)input.read("CollarColor", DyeColor.LEGACY_ID_CODEC).orElse(DEFAULT_COLLAR_COLOR));
+      this.readPersistentAngerSaveData(this.level(), input);
+      input.read("sound_variant", ResourceKey.codec(Registries.WOLF_SOUND_VARIANT)).flatMap((soundVariant) -> this.registryAccess().lookupOrThrow(Registries.WOLF_SOUND_VARIANT).get(soundVariant)).ifPresent(this::setSoundVariant);
+   }
+
+   public @Nullable SpawnGroupData finalizeSpawn(final ServerLevelAccessor level, final DifficultyInstance difficulty, final EntitySpawnReason spawnReason, @Nullable SpawnGroupData groupData) {
+      if (groupData instanceof WolfPackData wolfGroupData) {
+         this.setVariant(wolfGroupData.type);
+      } else {
+         Optional<? extends Holder<WolfVariant>> selectedVariant = VariantUtils.selectVariantToSpawn(SpawnContext.create(level, this.blockPosition()), Registries.WOLF_VARIANT);
+         if (selectedVariant.isPresent()) {
+            this.setVariant((Holder)selectedVariant.get());
+            groupData = new WolfPackData((Holder)selectedVariant.get());
+         }
+      }
+
+      this.setSoundVariant(WolfSoundVariants.pickRandomSoundVariant(this.registryAccess(), level.getRandom()));
+      return super.finalizeSpawn(level, difficulty, spawnReason, groupData);
+   }
+
+   protected SoundEvent getAmbientSound() {
+      if (this.isAngry()) {
+         return (SoundEvent)this.getSoundSet().growlSound().value();
+      } else if (this.random.nextInt(3) == 0) {
+         return this.isTame() && this.getHealth() < 20.0F ? (SoundEvent)this.getSoundSet().whineSound().value() : (SoundEvent)this.getSoundSet().pantSound().value();
+      } else {
+         return (SoundEvent)this.getSoundSet().ambientSound().value();
+      }
+   }
+
+   protected SoundEvent getHurtSound(final DamageSource source) {
+      return this.canArmorAbsorb(source) ? SoundEvents.WOLF_ARMOR_DAMAGE : (SoundEvent)this.getSoundSet().hurtSound().value();
+   }
+
+   protected SoundEvent getDeathSound() {
+      return (SoundEvent)this.getSoundSet().deathSound().value();
+   }
+
+   protected float getSoundVolume() {
+      return 0.4F;
+   }
+
+   public void aiStep() {
+      super.aiStep();
+      if (!this.level().isClientSide() && this.isWet && !this.isShaking && !this.isPathFinding() && this.onGround()) {
+         this.isShaking = true;
+         this.shakeAnim = 0.0F;
+         this.shakeAnimO = 0.0F;
+         this.level().broadcastEntityEvent(this, (byte)8);
+      }
+
+      if (!this.level().isClientSide()) {
+         this.updatePersistentAnger((ServerLevel)this.level(), true);
+      }
+
+   }
+
+   public void tick() {
+      super.tick();
+      if (this.isAlive()) {
+         this.interestedAngleO = this.interestedAngle;
+         if (this.isInterested()) {
+            this.interestedAngle += (1.0F - this.interestedAngle) * 0.4F;
+         } else {
+            this.interestedAngle += (0.0F - this.interestedAngle) * 0.4F;
+         }
+
+         if (this.isInWaterOrRain()) {
+            this.isWet = true;
+            if (this.isShaking && !this.level().isClientSide()) {
+               this.level().broadcastEntityEvent(this, (byte)56);
+               this.cancelShake();
+            }
+         } else if ((this.isWet || this.isShaking) && this.isShaking) {
+            if (this.shakeAnim == 0.0F) {
+               this.playSound(SoundEvents.WOLF_SHAKE, this.getSoundVolume(), (this.random.nextFloat() - this.random.nextFloat()) * 0.2F + 1.0F);
+               this.gameEvent(GameEvent.ENTITY_ACTION);
+            }
+
+            this.shakeAnimO = this.shakeAnim;
+            this.shakeAnim += 0.05F;
+            if (this.shakeAnimO >= 2.0F) {
+               this.isWet = false;
+               this.isShaking = false;
+               this.shakeAnimO = 0.0F;
+               this.shakeAnim = 0.0F;
+            }
+
+            if (this.shakeAnim > 0.4F) {
+               float yt = (float)this.getY();
+               int shakeCount = (int)(Mth.sin((double)((this.shakeAnim - 0.4F) * (float)Math.PI)) * 7.0F);
+               Vec3 movement = this.getDeltaMovement();
+
+               for(int i = 0; i < shakeCount; ++i) {
+                  float xo = (this.random.nextFloat() * 2.0F - 1.0F) * this.getBbWidth() * 0.5F;
+                  float zo = (this.random.nextFloat() * 2.0F - 1.0F) * this.getBbWidth() * 0.5F;
+                  this.level().addParticle(ParticleTypes.SPLASH, this.getX() + (double)xo, (double)(yt + 0.8F), this.getZ() + (double)zo, movement.x, movement.y, movement.z);
+               }
+            }
+         }
+
+      }
+   }
+
+   private void cancelShake() {
+      this.isShaking = false;
+      this.shakeAnim = 0.0F;
+      this.shakeAnimO = 0.0F;
+   }
+
+   public void die(final DamageSource source) {
+      this.isWet = false;
+      this.isShaking = false;
+      this.shakeAnimO = 0.0F;
+      this.shakeAnim = 0.0F;
+      super.die(source);
+   }
+
+   public float getWetShade(final float a) {
+      return !this.isWet ? 1.0F : Math.min(0.75F + Mth.lerp(a, this.shakeAnimO, this.shakeAnim) / 2.0F * 0.25F, 1.0F);
+   }
+
+   public float getShakeAnim(final float a) {
+      return Mth.lerp(a, this.shakeAnimO, this.shakeAnim);
+   }
+
+   public float getHeadRollAngle(final float a) {
+      return Mth.lerp(a, this.interestedAngleO, this.interestedAngle) * 0.15F * (float)Math.PI;
+   }
+
+   public int getMaxHeadXRot() {
+      return this.isInSittingPose() ? 20 : super.getMaxHeadXRot();
+   }
+
+   public boolean hurtServer(final ServerLevel level, final DamageSource source, final float damage) {
+      if (this.isInvulnerableTo(level, source)) {
+         return false;
+      } else {
+         this.setOrderedToSit(false);
+         return super.hurtServer(level, source, damage);
+      }
+   }
+
+   protected void actuallyHurt(final ServerLevel level, final DamageSource source, final float damage) {
+      if (!this.canArmorAbsorb(source)) {
+         super.actuallyHurt(level, source, damage);
+      } else {
+         ItemStack armorBefore = this.getBodyArmorItem();
+         int damageBefore = armorBefore.getDamageValue();
+         int maxDamage = armorBefore.getMaxDamage();
+         armorBefore.hurtAndBreak(Mth.ceil(damage), this, (EquipmentSlot)EquipmentSlot.BODY);
+         if (Crackiness.WOLF_ARMOR.byDamage(damageBefore, maxDamage) != Crackiness.WOLF_ARMOR.byDamage(this.getBodyArmorItem())) {
+            this.playSound(SoundEvents.WOLF_ARMOR_CRACK);
+            level.sendParticles(new ItemParticleOption(ParticleTypes.ITEM, Items.ARMADILLO_SCUTE), this.getX(), this.getY() + (double)1.0F, this.getZ(), 20, 0.2, 0.1, 0.2, 0.1);
+         }
+
+      }
+   }
+
+   private boolean canArmorAbsorb(final DamageSource source) {
+      return this.getBodyArmorItem().is(Items.WOLF_ARMOR) && !source.is(DamageTypeTags.BYPASSES_WOLF_ARMOR);
+   }
+
+   protected void applyTamingSideEffects() {
+      if (this.isTame()) {
+         this.getAttribute(Attributes.MAX_HEALTH).setBaseValue((double)40.0F);
+         this.setHealth(40.0F);
+      } else {
+         this.getAttribute(Attributes.MAX_HEALTH).setBaseValue((double)8.0F);
+      }
+
+   }
+
+   protected void hurtArmor(final DamageSource damageSource, final float damage) {
+      this.doHurtEquipment(damageSource, damage, new EquipmentSlot[]{EquipmentSlot.BODY});
+   }
+
+   protected boolean canShearEquipment(final Player player) {
+      return this.isOwnedBy(player);
+   }
+
+   public InteractionResult mobInteract(final Player player, final InteractionHand hand) {
+      ItemStack itemStack = player.getItemInHand(hand);
+      if (this.isTame()) {
+         if (this.isFood(itemStack) && this.getHealth() < this.getMaxHealth()) {
+            this.feed(player, hand, itemStack, 2.0F, 2.0F);
+            return InteractionResult.SUCCESS;
+         }
+
+         if (!itemStack.is(ItemTags.WOLF_COLLAR_DYES) || !this.isOwnedBy(player)) {
+            if (this.isEquippableInSlot(itemStack, EquipmentSlot.BODY) && !this.isWearingBodyArmor() && this.isOwnedBy(player) && !this.isBaby()) {
+               this.setBodyArmorItem(itemStack.copyWithCount(1));
+               itemStack.consume(1, player);
+               return InteractionResult.SUCCESS;
+            }
+
+            if (this.isInSittingPose() && this.isWearingBodyArmor() && this.isOwnedBy(player) && this.getBodyArmorItem().isDamaged() && this.getBodyArmorItem().isValidRepairItem(itemStack)) {
+               itemStack.shrink(1);
+               this.playSound(SoundEvents.WOLF_ARMOR_REPAIR);
+               ItemStack armor = this.getBodyArmorItem();
+               int repairUnit = (int)((float)armor.getMaxDamage() * 0.125F);
+               armor.setDamageValue(Math.max(0, armor.getDamageValue() - repairUnit));
+               return InteractionResult.SUCCESS;
+            }
+
+            InteractionResult interactionResult = super.mobInteract(player, hand);
+            if (!interactionResult.consumesAction() && this.isOwnedBy(player)) {
+               this.setOrderedToSit(!this.isOrderedToSit());
+               this.jumping = false;
+               this.navigation.stop();
+               this.setTarget((LivingEntity)null);
+               return InteractionResult.SUCCESS.withoutItem();
+            }
+
+            return interactionResult;
+         }
+
+         DyeColor color = (DyeColor)itemStack.get(DataComponents.DYE);
+         if (color != null && color != this.getCollarColor()) {
+            this.setCollarColor(color);
+            itemStack.consume(1, player);
+            return InteractionResult.SUCCESS;
+         }
+      } else if (!this.level().isClientSide() && itemStack.is(Items.BONE) && !this.isAngry()) {
+         itemStack.consume(1, player);
+         this.tryToTame(player);
+         return InteractionResult.SUCCESS_SERVER;
+      }
+
+      return super.mobInteract(player, hand);
+   }
+
+   private void tryToTame(final Player player) {
+      if (this.random.nextInt(3) == 0) {
+         this.tame(player);
+         this.navigation.stop();
+         this.setTarget((LivingEntity)null);
+         this.setOrderedToSit(true);
+         this.level().broadcastEntityEvent(this, (byte)7);
+      } else {
+         this.level().broadcastEntityEvent(this, (byte)6);
+      }
+
+   }
+
+   public void handleEntityEvent(final byte id) {
+      if (id == 8) {
+         this.isShaking = true;
+         this.shakeAnim = 0.0F;
+         this.shakeAnimO = 0.0F;
+      } else if (id == 56) {
+         this.cancelShake();
+      } else {
+         super.handleEntityEvent(id);
+      }
+
+   }
+
+   public float getTailAngle() {
+      if (this.isAngry()) {
+         return 1.5393804F;
+      } else if (this.isTame()) {
+         float maxHealth = this.getMaxHealth();
+         float damageRatio = (maxHealth - this.getHealth()) / maxHealth;
+         return (0.55F - damageRatio * 0.4F) * (float)Math.PI;
+      } else {
+         return ((float)Math.PI / 5F);
+      }
+   }
+
+   public boolean isFood(final ItemStack itemStack) {
+      return itemStack.is(ItemTags.WOLF_FOOD);
+   }
+
+   public int getMaxSpawnClusterSize() {
+      return 8;
+   }
+
+   public long getPersistentAngerEndTime() {
+      return (Long)this.entityData.get(DATA_ANGER_END_TIME);
+   }
+
+   public void setPersistentAngerEndTime(final long endTime) {
+      this.entityData.set(DATA_ANGER_END_TIME, endTime);
+   }
+
+   public void startPersistentAngerTimer() {
+      this.setTimeToRemainAngry((long)PERSISTENT_ANGER_TIME.sample(this.random));
+   }
+
+   public @Nullable EntityReference<LivingEntity> getPersistentAngerTarget() {
+      return this.persistentAngerTarget;
+   }
+
+   public void setPersistentAngerTarget(final @Nullable EntityReference<LivingEntity> persistentAngerTarget) {
+      this.persistentAngerTarget = persistentAngerTarget;
+   }
+
+   public DyeColor getCollarColor() {
+      return DyeColor.byId((Integer)this.entityData.get(DATA_COLLAR_COLOR));
+   }
+
+   private void setCollarColor(final DyeColor color) {
+      this.entityData.set(DATA_COLLAR_COLOR, color.getId());
+   }
+
+   public @Nullable Wolf getBreedOffspring(final ServerLevel level, final AgeableMob partner) {
+      Wolf baby = EntityType.WOLF.create(level, EntitySpawnReason.BREEDING);
+      if (baby != null && partner instanceof Wolf partnerWolf) {
+         if (this.random.nextBoolean()) {
+            baby.setVariant(this.getVariant());
+         } else {
+            baby.setVariant(partnerWolf.getVariant());
+         }
+
+         if (this.isTame()) {
+            baby.setOwnerReference(this.getOwnerReference());
+            baby.setTame(true, true);
+            DyeColor parent1CollarColor = this.getCollarColor();
+            DyeColor parent2CollarColor = partnerWolf.getCollarColor();
+            baby.setCollarColor(DyeColor.getMixedColor(level, parent1CollarColor, parent2CollarColor));
+         }
+
+         baby.setSoundVariant(WolfSoundVariants.pickRandomSoundVariant(this.registryAccess(), this.random));
+      }
+
+      return baby;
+   }
+
+   public void setIsInterested(final boolean value) {
+      this.entityData.set(DATA_INTERESTED_ID, value);
+   }
+
+   public boolean canMate(final Animal partner) {
+      if (partner == this) {
+         return false;
+      } else if (!this.isTame()) {
+         return false;
+      } else if (!(partner instanceof Wolf)) {
+         return false;
+      } else {
+         Wolf wolf = (Wolf)partner;
+         if (!wolf.isTame()) {
+            return false;
+         } else if (wolf.isInSittingPose()) {
+            return false;
+         } else {
+            return this.isInLove() && wolf.isInLove();
+         }
+      }
+   }
+
+   public boolean isInterested() {
+      return (Boolean)this.entityData.get(DATA_INTERESTED_ID);
+   }
+
+   public boolean wantsToAttack(final LivingEntity target, final LivingEntity owner) {
+      if (!(target instanceof Creeper) && !(target instanceof Ghast) && !(target instanceof ArmorStand)) {
+         if (target instanceof Wolf) {
+            Wolf wolfTarget = (Wolf)target;
+            return !wolfTarget.isTame() || wolfTarget.getOwner() != owner;
+         } else {
+            if (target instanceof Player) {
+               Player playerTarget = (Player)target;
+               if (owner instanceof Player) {
+                  Player playerOwner = (Player)owner;
+                  if (!playerOwner.canHarmPlayer(playerTarget)) {
+                     return false;
+                  }
+               }
+            }
+
+            if (target instanceof AbstractHorse) {
+               AbstractHorse horse = (AbstractHorse)target;
+               if (horse.isTamed()) {
+                  return false;
+               }
+            }
+
+            boolean var10000;
+            if (target instanceof TamableAnimal) {
+               TamableAnimal animal = (TamableAnimal)target;
+               if (animal.isTame()) {
+                  var10000 = false;
+                  return var10000;
+               }
+            }
+
+            var10000 = true;
+            return var10000;
+         }
+      } else {
+         return false;
+      }
+   }
+
+   public boolean canBeLeashed() {
+      return !this.isAngry();
+   }
+
+   public Vec3 getLeashOffset() {
+      return new Vec3((double)0.0F, (double)(0.6F * this.getEyeHeight()), (double)(this.getBbWidth() * 0.4F));
+   }
+
+   public static boolean checkWolfSpawnRules(final EntityType<Wolf> type, final LevelAccessor level, final EntitySpawnReason spawnReason, final BlockPos pos, final RandomSource random) {
+      return level.getBlockState(pos.below()).is(BlockTags.WOLVES_SPAWNABLE_ON) && isBrightEnoughToSpawn(level, pos);
+   }
+
+   static {
+      DATA_INTERESTED_ID = SynchedEntityData.<Boolean>defineId(Wolf.class, EntityDataSerializers.BOOLEAN);
+      DATA_COLLAR_COLOR = SynchedEntityData.<Integer>defineId(Wolf.class, EntityDataSerializers.INT);
+      DATA_ANGER_END_TIME = SynchedEntityData.<Long>defineId(Wolf.class, EntityDataSerializers.LONG);
+      DATA_VARIANT_ID = SynchedEntityData.<Holder<WolfVariant>>defineId(Wolf.class, EntityDataSerializers.WOLF_VARIANT);
+      DATA_SOUND_VARIANT_ID = SynchedEntityData.<Holder<WolfSoundVariant>>defineId(Wolf.class, EntityDataSerializers.WOLF_SOUND_VARIANT);
+      PREY_SELECTOR = (target, level) -> target.is(EntityType.SHEEP) || target.is(EntityType.RABBIT) || target.is(EntityType.FOX);
+      DEFAULT_COLLAR_COLOR = DyeColor.RED;
+      PERSISTENT_ANGER_TIME = TimeUtil.rangeOfSeconds(20, 39);
+   }
+
+   public static class WolfPackData extends AgeableMob.AgeableMobGroupData {
+      public final Holder<WolfVariant> type;
+
+      public WolfPackData(final Holder<WolfVariant> type) {
+         super(false);
+         this.type = type;
+      }
+   }
+
+   private class WolfAvoidEntityGoal<T extends LivingEntity> extends AvoidEntityGoal<T> {
+      private final Wolf wolf;
+
+      public WolfAvoidEntityGoal(final Wolf wolf, final Class<T> avoidClass, final float maxDist, final double walkSpeedModifier, final double sprintSpeedModifier) {
+         Objects.requireNonNull(Wolf.this);
+         super(wolf, avoidClass, maxDist, walkSpeedModifier, sprintSpeedModifier);
+         this.wolf = wolf;
+      }
+
+      public boolean canUse() {
+         if (super.canUse() && this.toAvoid instanceof Llama) {
+            return !this.wolf.isTame() && this.avoidLlama((Llama)this.toAvoid);
+         } else {
+            return false;
+         }
+      }
+
+      private boolean avoidLlama(final Llama llama) {
+         return llama.getStrength() >= Wolf.this.random.nextInt(5);
+      }
+
+      public void start() {
+         Wolf.this.setTarget((LivingEntity)null);
+         super.start();
+      }
+
+      public void tick() {
+         Wolf.this.setTarget((LivingEntity)null);
+         super.tick();
+      }
+   }
+}

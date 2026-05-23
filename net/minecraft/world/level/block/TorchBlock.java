@@ -1,0 +1,50 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.DataResult;
+import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.particles.SimpleParticleType;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+
+public class TorchBlock extends BaseTorchBlock {
+   protected static final MapCodec<SimpleParticleType> PARTICLE_OPTIONS_FIELD;
+   public static final MapCodec<TorchBlock> CODEC;
+   protected final SimpleParticleType flameParticle;
+
+   public MapCodec<? extends TorchBlock> codec() {
+      return CODEC;
+   }
+
+   protected TorchBlock(final SimpleParticleType flameParticle, final BlockBehaviour.Properties properties) {
+      super(properties);
+      this.flameParticle = flameParticle;
+   }
+
+   public void animateTick(final BlockState state, final Level level, final BlockPos pos, final RandomSource random) {
+      double x = (double)pos.getX() + (double)0.5F;
+      double y = (double)pos.getY() + 0.7;
+      double z = (double)pos.getZ() + (double)0.5F;
+      level.addParticle(ParticleTypes.SMOKE, x, y, z, (double)0.0F, (double)0.0F, (double)0.0F);
+      level.addParticle(this.flameParticle, x, y, z, (double)0.0F, (double)0.0F, (double)0.0F);
+   }
+
+   static {
+      PARTICLE_OPTIONS_FIELD = BuiltInRegistries.PARTICLE_TYPE.byNameCodec().comapFlatMap((type) -> {
+         DataResult var10000;
+         if (type instanceof SimpleParticleType simple) {
+            var10000 = DataResult.success(simple);
+         } else {
+            var10000 = DataResult.error(() -> "Not a SimpleParticleType: " + String.valueOf(type));
+         }
+
+         return var10000;
+      }, (type) -> type).fieldOf("particle_options");
+      CODEC = RecordCodecBuilder.mapCodec((i) -> i.group(PARTICLE_OPTIONS_FIELD.forGetter((b) -> b.flameParticle), propertiesCodec()).apply(i, TorchBlock::new));
+   }
+}

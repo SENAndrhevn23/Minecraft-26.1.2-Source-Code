@@ -1,0 +1,44 @@
+package net.minecraft.world.level.levelgen.feature.treedecorators;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
+
+public class TreeDecoratorType<P extends TreeDecorator> {
+   public static final TreeDecoratorType<TrunkVineDecorator> TRUNK_VINE;
+   public static final TreeDecoratorType<LeaveVineDecorator> LEAVE_VINE;
+   public static final TreeDecoratorType<PaleMossDecorator> PALE_MOSS;
+   public static final TreeDecoratorType<CreakingHeartDecorator> CREAKING_HEART;
+   public static final TreeDecoratorType<CocoaDecorator> COCOA;
+   public static final TreeDecoratorType<BeehiveDecorator> BEEHIVE;
+   public static final TreeDecoratorType<AlterGroundDecorator> ALTER_GROUND;
+   public static final TreeDecoratorType<AttachedToLeavesDecorator> ATTACHED_TO_LEAVES;
+   public static final TreeDecoratorType<PlaceOnGroundDecorator> PLACE_ON_GROUND;
+   public static final TreeDecoratorType<AttachedToLogsDecorator> ATTACHED_TO_LOGS;
+   private final MapCodec<P> codec;
+
+   private static <P extends TreeDecorator> TreeDecoratorType<P> register(final String name, final MapCodec<P> codec) {
+      return (TreeDecoratorType)Registry.register(BuiltInRegistries.TREE_DECORATOR_TYPE, (String)name, new TreeDecoratorType(codec));
+   }
+
+   private TreeDecoratorType(final MapCodec<P> codec) {
+      this.codec = codec;
+   }
+
+   public MapCodec<P> codec() {
+      return this.codec;
+   }
+
+   static {
+      TRUNK_VINE = register("trunk_vine", TrunkVineDecorator.CODEC);
+      LEAVE_VINE = register("leave_vine", LeaveVineDecorator.CODEC);
+      PALE_MOSS = register("pale_moss", PaleMossDecorator.CODEC);
+      CREAKING_HEART = register("creaking_heart", CreakingHeartDecorator.CODEC);
+      COCOA = register("cocoa", CocoaDecorator.CODEC);
+      BEEHIVE = register("beehive", BeehiveDecorator.CODEC);
+      ALTER_GROUND = register("alter_ground", AlterGroundDecorator.CODEC);
+      ATTACHED_TO_LEAVES = register("attached_to_leaves", AttachedToLeavesDecorator.CODEC);
+      PLACE_ON_GROUND = register("place_on_ground", PlaceOnGroundDecorator.CODEC);
+      ATTACHED_TO_LOGS = register("attached_to_logs", AttachedToLogsDecorator.CODEC);
+   }
+}

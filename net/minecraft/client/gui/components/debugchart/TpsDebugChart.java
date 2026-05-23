@@ -1,0 +1,59 @@
+package net.minecraft.client.gui.components.debugchart;
+
+import java.util.Locale;
+import java.util.function.Supplier;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.util.TimeUtil;
+import net.minecraft.util.debugchart.SampleStorage;
+import net.minecraft.util.debugchart.TpsDebugDimensions;
+
+public class TpsDebugChart extends AbstractDebugChart {
+   private static final int TICK_METHOD_COLOR = -6745839;
+   private static final int TASK_COLOR = -4548257;
+   private static final int OTHER_COLOR = -10547572;
+   private final Supplier<Float> msptSupplier;
+
+   public TpsDebugChart(final Font font, final SampleStorage sampleStorage, final Supplier<Float> msptSupplier) {
+      super(font, sampleStorage);
+      this.msptSupplier = msptSupplier;
+   }
+
+   protected void extractAdditionalLinesAndLabels(final GuiGraphicsExtractor graphics, final int left, final int width, final int bottom) {
+      float tps = (float)TimeUtil.MILLISECONDS_PER_SECOND / (Float)this.msptSupplier.get();
+      this.extractStringWithShade(graphics, String.format(Locale.ROOT, "%.1f TPS", tps), left + 1, bottom - 60 + 1);
+   }
+
+   protected void extractAdditionalSampleBars(final GuiGraphicsExtractor graphics, final int bottom, final int currentX, final int sampleIndex) {
+      long tickMethodTime = this.sampleStorage.get(sampleIndex, TpsDebugDimensions.TICK_SERVER_METHOD.ordinal());
+      int tickMethodHeight = this.getSampleHeight((double)tickMethodTime);
+      graphics.fill(currentX, bottom - tickMethodHeight, currentX + 1, bottom, -6745839);
+      long tasksTime = this.sampleStorage.get(sampleIndex, TpsDebugDimensions.SCHEDULED_TASKS.ordinal());
+      int tasksHeight = this.getSampleHeight((double)tasksTime);
+      graphics.fill(currentX, bottom - tickMethodHeight - tasksHeight, currentX + 1, bottom - tickMethodHeight, -4548257);
+      long otherTime = this.sampleStorage.get(sampleIndex) - this.sampleStorage.get(sampleIndex, TpsDebugDimensions.IDLE.ordinal()) - tickMethodTime - tasksTime;
+      int otherHeight = this.getSampleHeight((double)otherTime);
+      graphics.fill(currentX, bottom - otherHeight - tasksHeight - tickMethodHeight, currentX + 1, bottom - tasksHeight - tickMethodHeight, -10547572);
+   }
+
+   protected long getValueForAggregation(final int sampleIndex) {
+      return this.sampleStorage.get(sampleIndex) - this.sampleStorage.get(sampleIndex, TpsDebugDimensions.IDLE.ordinal());
+   }
+
+   protected String toDisplayString(final double nanos) {
+      return String.format(Locale.ROOT, "%d ms", (int)Math.round(toMilliseconds(nanos)));
+   }
+
+   protected int getSampleHeight(final double nanos) {
+      return (int)Math.round(toMilliseconds(nanos) * (double)60.0F / (double)(Float)this.msptSupplier.get());
+   }
+
+   protected int getSampleColor(final long nanos) {
+      float mspt = (Float)this.msptSupplier.get();
+      return this.getSampleColor(toMilliseconds((double)nanos), (double)mspt, -16711936, (double)mspt * (double)1.125F, -256, (double)mspt * (double)1.25F, -65536);
+   }
+
+   private static double toMilliseconds(final double nanos) {
+      return nanos / (double)1000000.0F;
+   }
+}

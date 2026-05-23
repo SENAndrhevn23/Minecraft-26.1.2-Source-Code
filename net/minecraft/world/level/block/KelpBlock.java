@@ -1,0 +1,66 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.phys.shapes.VoxelShape;
+import org.jspecify.annotations.Nullable;
+
+public class KelpBlock extends GrowingPlantHeadBlock implements LiquidBlockContainer {
+   public static final MapCodec<KelpBlock> CODEC = simpleCodec(KelpBlock::new);
+   private static final double GROW_PER_TICK_PROBABILITY = 0.14;
+   private static final VoxelShape SHAPE = Block.column((double)16.0F, (double)0.0F, (double)9.0F);
+
+   public MapCodec<KelpBlock> codec() {
+      return CODEC;
+   }
+
+   protected KelpBlock(final BlockBehaviour.Properties properties) {
+      super(properties, Direction.UP, SHAPE, true, 0.14);
+   }
+
+   protected boolean canGrowInto(final BlockState state) {
+      return state.is(Blocks.WATER);
+   }
+
+   protected Block getBodyBlock() {
+      return Blocks.KELP_PLANT;
+   }
+
+   protected boolean canAttachTo(final BlockState state) {
+      return !state.is(BlockTags.CANNOT_SUPPORT_KELP);
+   }
+
+   public boolean canPlaceLiquid(final @Nullable LivingEntity user, final BlockGetter level, final BlockPos pos, final BlockState state, final Fluid type) {
+      return false;
+   }
+
+   public boolean placeLiquid(final LevelAccessor level, final BlockPos pos, final BlockState state, final FluidState fluidState) {
+      return false;
+   }
+
+   protected int getBlocksToGrowWhenBonemealed(final RandomSource random) {
+      return 1;
+   }
+
+   public @Nullable BlockState getStateForPlacement(final BlockPlaceContext context) {
+      FluidState fluidState = context.getLevel().getFluidState(context.getClickedPos());
+      return fluidState.is(FluidTags.WATER) && fluidState.isFull() ? super.getStateForPlacement(context) : null;
+   }
+
+   protected FluidState getFluidState(final BlockState state) {
+      return Fluids.WATER.getSource(false);
+   }
+}

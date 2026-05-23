@@ -1,0 +1,111 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.particles.BlockParticleOption;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.entity.item.FallingBlockEntity;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ScheduledTickAccess;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BrushableBlockEntity;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.IntegerProperty;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
+
+public class BrushableBlock extends BaseEntityBlock implements Fallable {
+   public static final MapCodec<BrushableBlock> CODEC = RecordCodecBuilder.mapCodec((i) -> i.group(BuiltInRegistries.BLOCK.byNameCodec().fieldOf("turns_into").forGetter(BrushableBlock::getTurnsInto), BuiltInRegistries.SOUND_EVENT.byNameCodec().fieldOf("brush_sound").forGetter(BrushableBlock::getBrushSound), BuiltInRegistries.SOUND_EVENT.byNameCodec().fieldOf("brush_completed_sound").forGetter(BrushableBlock::getBrushCompletedSound), propertiesCodec()).apply(i, BrushableBlock::new));
+   private static final IntegerProperty DUSTED;
+   public static final int TICK_DELAY = 2;
+   private final Block turnsInto;
+   private final SoundEvent brushSound;
+   private final SoundEvent brushCompletedSound;
+
+   public MapCodec<BrushableBlock> codec() {
+      return CODEC;
+   }
+
+   public BrushableBlock(final Block turnsInto, final SoundEvent brushSound, final SoundEvent brushCompletedSound, final BlockBehaviour.Properties properties) {
+      super(properties);
+      this.turnsInto = turnsInto;
+      this.brushSound = brushSound;
+      this.brushCompletedSound = brushCompletedSound;
+      this.registerDefaultState((BlockState)((BlockState)this.stateDefinition.any()).setValue(DUSTED, 0));
+   }
+
+   protected void createBlockStateDefinition(final StateDefinition.Builder<Block, BlockState> builder) {
+      builder.add(DUSTED);
+   }
+
+   public void onPlace(final BlockState state, final Level level, final BlockPos pos, final BlockState oldState, final boolean movedByPiston) {
+      level.scheduleTick(pos, this, 2);
+   }
+
+   public BlockState updateShape(final BlockState state, final LevelReader level, final ScheduledTickAccess ticks, final BlockPos pos, final Direction directionToNeighbour, final BlockPos neighbourPos, final BlockState neighbourState, final RandomSource random) {
+      ticks.scheduleTick(pos, (Block)this, 2);
+      return super.updateShape(state, level, ticks, pos, directionToNeighbour, neighbourPos, neighbourState, random);
+   }
+
+   public void tick(final BlockState state, final ServerLevel level, final BlockPos pos, final RandomSource random) {
+      BlockEntity var6 = level.getBlockEntity(pos);
+      if (var6 instanceof BrushableBlockEntity brushableBlockEntity) {
+         brushableBlockEntity.checkReset(level);
+      }
+
+      if (FallingBlock.isFree(level.getBlockState(pos.below())) && pos.getY() >= level.getMinY()) {
+         FallingBlockEntity entity = FallingBlockEntity.fall(level, pos, state);
+         entity.disableDrop();
+      }
+   }
+
+   public void onBrokenAfterFall(final Level level, final BlockPos pos, final FallingBlockEntity entity) {
+      Vec3 centerOfEntity = entity.getBoundingBox().getCenter();
+      level.levelEvent(2001, BlockPos.containing(centerOfEntity), Block.getId(entity.getBlockState()));
+      level.gameEvent(entity, GameEvent.BLOCK_DESTROY, centerOfEntity);
+   }
+
+   public void animateTick(final BlockState state, final Level level, final BlockPos pos, final RandomSource random) {
+      if (random.nextInt(16) == 0) {
+         BlockPos below = pos.below();
+         if (FallingBlock.isFree(level.getBlockState(below))) {
+            double xx = (double)pos.getX() + random.nextDouble();
+            double yy = (double)pos.getY() - 0.05;
+            double zz = (double)pos.getZ() + random.nextDouble();
+            level.addParticle(new BlockParticleOption(ParticleTypes.FALLING_DUST, state), xx, yy, zz, (double)0.0F, (double)0.0F, (double)0.0F);
+         }
+      }
+
+   }
+
+   public @Nullable BlockEntity newBlockEntity(final BlockPos worldPosition, final BlockState blockState) {
+      return new BrushableBlockEntity(worldPosition, blockState);
+   }
+
+   public Block getTurnsInto() {
+      return this.turnsInto;
+   }
+
+   public SoundEvent getBrushSound() {
+      return this.brushSound;
+   }
+
+   public SoundEvent getBrushCompletedSound() {
+      return this.brushCompletedSound;
+   }
+
+   static {
+      DUSTED = BlockStateProperties.DUSTED;
+   }
+}

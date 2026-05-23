@@ -1,0 +1,105 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import net.minecraft.core.BlockPos;
+import net.minecraft.util.StringRepresentable;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.IntegerProperty;
+import net.minecraft.world.level.block.state.properties.RotationSegment;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+public class SkullBlock extends AbstractSkullBlock {
+   public static final MapCodec<SkullBlock> CODEC = RecordCodecBuilder.mapCodec((i) -> i.group(SkullBlock.Type.CODEC.fieldOf("kind").forGetter(AbstractSkullBlock::getType), propertiesCodec()).apply(i, SkullBlock::new));
+   public static final int MAX = RotationSegment.getMaxSegmentIndex();
+   private static final int ROTATIONS;
+   public static final IntegerProperty ROTATION;
+   private static final VoxelShape SHAPE;
+   private static final VoxelShape SHAPE_PIGLIN;
+
+   public MapCodec<? extends SkullBlock> codec() {
+      return CODEC;
+   }
+
+   protected SkullBlock(final Type type, final BlockBehaviour.Properties properties) {
+      super(type, properties);
+      this.registerDefaultState((BlockState)this.defaultBlockState().setValue(ROTATION, 0));
+   }
+
+   protected VoxelShape getShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      return this.getType() == SkullBlock.Types.PIGLIN ? SHAPE_PIGLIN : SHAPE;
+   }
+
+   public BlockState getStateForPlacement(final BlockPlaceContext context) {
+      return (BlockState)super.getStateForPlacement(context).setValue(ROTATION, RotationSegment.convertToSegment(context.getRotation()));
+   }
+
+   protected BlockState rotate(final BlockState state, final Rotation rotation) {
+      return (BlockState)state.setValue(ROTATION, rotation.rotate((Integer)state.getValue(ROTATION), ROTATIONS));
+   }
+
+   protected BlockState mirror(final BlockState state, final Mirror mirror) {
+      return (BlockState)state.setValue(ROTATION, mirror.mirror((Integer)state.getValue(ROTATION), ROTATIONS));
+   }
+
+   protected void createBlockStateDefinition(final StateDefinition.Builder<Block, BlockState> builder) {
+      super.createBlockStateDefinition(builder);
+      builder.add(ROTATION);
+   }
+
+   static {
+      ROTATIONS = MAX + 1;
+      ROTATION = BlockStateProperties.ROTATION_16;
+      SHAPE = Block.column((double)8.0F, (double)0.0F, (double)8.0F);
+      SHAPE_PIGLIN = Block.column((double)10.0F, (double)0.0F, (double)8.0F);
+   }
+
+   public interface Type extends StringRepresentable {
+      Map<String, Type> TYPES = new Object2ObjectArrayMap();
+      Codec<Type> CODEC;
+
+      static {
+         Function var10000 = StringRepresentable::getSerializedName;
+         Map var10001 = TYPES;
+         Objects.requireNonNull(var10001);
+         CODEC = Codec.stringResolver(var10000, var10001::get);
+      }
+   }
+
+   public static enum Types implements Type {
+      SKELETON("skeleton"),
+      WITHER_SKELETON("wither_skeleton"),
+      PLAYER("player"),
+      ZOMBIE("zombie"),
+      CREEPER("creeper"),
+      PIGLIN("piglin"),
+      DRAGON("dragon");
+
+      private final String name;
+
+      private Types(final String name) {
+         this.name = name;
+         TYPES.put(name, this);
+      }
+
+      public String getSerializedName() {
+         return this.name;
+      }
+
+      // $FF: synthetic method
+      private static Types[] $values() {
+         return new Types[]{SKELETON, WITHER_SKELETON, PLAYER, ZOMBIE, CREEPER, PIGLIN, DRAGON};
+      }
+   }
+}

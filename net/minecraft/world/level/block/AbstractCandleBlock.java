@@ -1,0 +1,99 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import java.util.function.BiConsumer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Explosion;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
+
+public abstract class AbstractCandleBlock extends Block {
+   public static final int LIGHT_PER_CANDLE = 3;
+   public static final BooleanProperty LIT;
+
+   protected abstract MapCodec<? extends AbstractCandleBlock> codec();
+
+   protected AbstractCandleBlock(final BlockBehaviour.Properties properties) {
+      super(properties);
+   }
+
+   protected abstract Iterable<Vec3> getParticleOffsets(final BlockState state);
+
+   public static boolean isLit(final BlockState state) {
+      return state.hasProperty(LIT) && (state.is(BlockTags.CANDLES) || state.is(BlockTags.CANDLE_CAKES)) && (Boolean)state.getValue(LIT);
+   }
+
+   protected void onProjectileHit(final Level level, final BlockState state, final BlockHitResult blockHit, final Projectile projectile) {
+      if (!level.isClientSide() && projectile.isOnFire() && this.canBeLit(state)) {
+         setLit(level, state, blockHit.getBlockPos(), true);
+      }
+
+   }
+
+   protected boolean canBeLit(final BlockState state) {
+      return !(Boolean)state.getValue(LIT);
+   }
+
+   public void animateTick(final BlockState state, final Level level, final BlockPos pos, final RandomSource random) {
+      if ((Boolean)state.getValue(LIT)) {
+         this.getParticleOffsets(state).forEach((particlePos) -> addParticlesAndSound(level, particlePos.add((double)pos.getX(), (double)pos.getY(), (double)pos.getZ()), random));
+      }
+   }
+
+   private static void addParticlesAndSound(final Level level, final Vec3 pos, final RandomSource random) {
+      float chance = random.nextFloat();
+      if (chance < 0.3F) {
+         level.addParticle(ParticleTypes.SMOKE, pos.x, pos.y, pos.z, (double)0.0F, (double)0.0F, (double)0.0F);
+         if (chance < 0.17F) {
+            level.playLocalSound(pos.x + (double)0.5F, pos.y + (double)0.5F, pos.z + (double)0.5F, SoundEvents.CANDLE_AMBIENT, SoundSource.BLOCKS, 1.0F + random.nextFloat(), random.nextFloat() * 0.7F + 0.3F, false);
+         }
+      }
+
+      level.addParticle(ParticleTypes.SMALL_FLAME, pos.x, pos.y, pos.z, (double)0.0F, (double)0.0F, (double)0.0F);
+   }
+
+   public static void extinguish(final @Nullable Player player, final BlockState state, final LevelAccessor level, final BlockPos pos) {
+      setLit(level, state, pos, false);
+      if (state.getBlock() instanceof AbstractCandleBlock) {
+         ((AbstractCandleBlock)state.getBlock()).getParticleOffsets(state).forEach((particlePos) -> level.addParticle(ParticleTypes.SMOKE, (double)pos.getX() + particlePos.x(), (double)pos.getY() + particlePos.y(), (double)pos.getZ() + particlePos.z(), (double)0.0F, (double)0.1F, (double)0.0F));
+      }
+
+      level.playSound((Entity)null, pos, SoundEvents.CANDLE_EXTINGUISH, SoundSource.BLOCKS, 1.0F, 1.0F);
+      level.gameEvent(player, (Holder)GameEvent.BLOCK_CHANGE, (BlockPos)pos);
+   }
+
+   private static void setLit(final LevelAccessor level, final BlockState state, final BlockPos pos, final boolean lit) {
+      level.setBlock(pos, (BlockState)state.setValue(LIT, lit), 11);
+   }
+
+   protected void onExplosionHit(final BlockState state, final ServerLevel level, final BlockPos pos, final Explosion explosion, final BiConsumer<ItemStack, BlockPos> onHit) {
+      if (explosion.canTriggerBlocks() && (Boolean)state.getValue(LIT)) {
+         extinguish((Player)null, state, level, pos);
+      }
+
+      super.onExplosionHit(state, level, pos, explosion, onHit);
+   }
+
+   static {
+      LIT = BlockStateProperties.LIT;
+   }
+}

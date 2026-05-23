@@ -1,0 +1,189 @@
+package net.minecraft.world.level.block;
+
+import com.google.common.collect.Maps;
+import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+import java.util.Map;
+import java.util.function.BiConsumer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.util.RandomSource;
+import net.minecraft.util.Util;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Explosion;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ScheduledTickAccess;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.block.state.properties.WoodType;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.level.pathfinder.PathComputationType;
+import net.minecraft.world.level.redstone.Orientation;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.BooleanOp;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+import org.jspecify.annotations.Nullable;
+
+public class FenceGateBlock extends HorizontalDirectionalBlock {
+   public static final MapCodec<FenceGateBlock> CODEC = RecordCodecBuilder.mapCodec((i) -> i.group(WoodType.CODEC.fieldOf("wood_type").forGetter((b) -> b.type), propertiesCodec()).apply(i, FenceGateBlock::new));
+   public static final BooleanProperty OPEN;
+   public static final BooleanProperty POWERED;
+   public static final BooleanProperty IN_WALL;
+   private static final Map<Direction.Axis, VoxelShape> SHAPES;
+   private static final Map<Direction.Axis, VoxelShape> SHAPES_WALL;
+   private static final Map<Direction.Axis, VoxelShape> SHAPE_COLLISION;
+   private static final Map<Direction.Axis, VoxelShape> SHAPE_SUPPORT;
+   private static final Map<Direction.Axis, VoxelShape> SHAPE_OCCLUSION;
+   private static final Map<Direction.Axis, VoxelShape> SHAPE_OCCLUSION_WALL;
+   private final WoodType type;
+
+   public MapCodec<FenceGateBlock> codec() {
+      return CODEC;
+   }
+
+   public FenceGateBlock(final WoodType type, final BlockBehaviour.Properties properties) {
+      super(properties.sound(type.soundType()));
+      this.type = type;
+      this.registerDefaultState((BlockState)((BlockState)((BlockState)((BlockState)this.stateDefinition.any()).setValue(OPEN, false)).setValue(POWERED, false)).setValue(IN_WALL, false));
+   }
+
+   protected VoxelShape getShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      Direction.Axis axis = ((Direction)state.getValue(FACING)).getAxis();
+      return (VoxelShape)((Boolean)state.getValue(IN_WALL) ? SHAPES_WALL : SHAPES).get(axis);
+   }
+
+   protected BlockState updateShape(final BlockState state, final LevelReader level, final ScheduledTickAccess ticks, final BlockPos pos, final Direction directionToNeighbour, final BlockPos neighbourPos, final BlockState neighbourState, final RandomSource random) {
+      Direction.Axis axis = directionToNeighbour.getAxis();
+      if (((Direction)state.getValue(FACING)).getClockWise().getAxis() != axis) {
+         return super.updateShape(state, level, ticks, pos, directionToNeighbour, neighbourPos, neighbourState, random);
+      } else {
+         boolean inWall = this.isWall(neighbourState) || this.isWall(level.getBlockState(pos.relative(directionToNeighbour.getOpposite())));
+         return (BlockState)state.setValue(IN_WALL, inWall);
+      }
+   }
+
+   protected VoxelShape getBlockSupportShape(final BlockState state, final BlockGetter level, final BlockPos pos) {
+      Direction.Axis axis = ((Direction)state.getValue(FACING)).getAxis();
+      return (Boolean)state.getValue(OPEN) ? Shapes.empty() : (VoxelShape)SHAPE_SUPPORT.get(axis);
+   }
+
+   protected VoxelShape getCollisionShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      Direction.Axis axis = ((Direction)state.getValue(FACING)).getAxis();
+      return (Boolean)state.getValue(OPEN) ? Shapes.empty() : (VoxelShape)SHAPE_COLLISION.get(axis);
+   }
+
+   protected VoxelShape getOcclusionShape(final BlockState state) {
+      Direction.Axis axis = ((Direction)state.getValue(FACING)).getAxis();
+      return (VoxelShape)((Boolean)state.getValue(IN_WALL) ? SHAPE_OCCLUSION_WALL : SHAPE_OCCLUSION).get(axis);
+   }
+
+   protected boolean isPathfindable(final BlockState state, final PathComputationType type) {
+      switch (type) {
+         case LAND -> {
+            return (Boolean)state.getValue(OPEN);
+         }
+         case WATER -> {
+            return false;
+         }
+         case AIR -> {
+            return (Boolean)state.getValue(OPEN);
+         }
+         default -> {
+            return false;
+         }
+      }
+   }
+
+   public BlockState getStateForPlacement(final BlockPlaceContext context) {
+      Level level = context.getLevel();
+      BlockPos pos = context.getClickedPos();
+      boolean isOpen = level.hasNeighborSignal(pos);
+      Direction direction = context.getHorizontalDirection();
+      Direction.Axis axis = direction.getAxis();
+      boolean inWall = axis == Direction.Axis.Z && (this.isWall(level.getBlockState(pos.west())) || this.isWall(level.getBlockState(pos.east()))) || axis == Direction.Axis.X && (this.isWall(level.getBlockState(pos.north())) || this.isWall(level.getBlockState(pos.south())));
+      return (BlockState)((BlockState)((BlockState)((BlockState)this.defaultBlockState().setValue(FACING, direction)).setValue(OPEN, isOpen)).setValue(POWERED, isOpen)).setValue(IN_WALL, inWall);
+   }
+
+   private boolean isWall(final BlockState state) {
+      return state.is(BlockTags.WALLS);
+   }
+
+   protected InteractionResult useWithoutItem(BlockState state, final Level level, final BlockPos pos, final Player player, final BlockHitResult hitResult) {
+      if ((Boolean)state.getValue(OPEN)) {
+         state = (BlockState)state.setValue(OPEN, false);
+         level.setBlock(pos, state, 10);
+      } else {
+         Direction direction = player.getDirection();
+         if (state.getValue(FACING) == direction.getOpposite()) {
+            state = (BlockState)state.setValue(FACING, direction);
+         }
+
+         state = (BlockState)state.setValue(OPEN, true);
+         level.setBlock(pos, state, 10);
+      }
+
+      boolean opens = (Boolean)state.getValue(OPEN);
+      level.playSound(player, (BlockPos)pos, opens ? this.type.fenceGateOpen() : this.type.fenceGateClose(), SoundSource.BLOCKS, 1.0F, level.getRandom().nextFloat() * 0.1F + 0.9F);
+      level.gameEvent(player, opens ? GameEvent.BLOCK_OPEN : GameEvent.BLOCK_CLOSE, pos);
+      return InteractionResult.SUCCESS;
+   }
+
+   protected void onExplosionHit(final BlockState state, final ServerLevel level, final BlockPos pos, final Explosion explosion, final BiConsumer<ItemStack, BlockPos> onHit) {
+      if (explosion.canTriggerBlocks() && !(Boolean)state.getValue(POWERED)) {
+         boolean open = (Boolean)state.getValue(OPEN);
+         level.setBlockAndUpdate(pos, (BlockState)state.setValue(OPEN, !open));
+         level.playSound((Entity)null, pos, open ? this.type.fenceGateClose() : this.type.fenceGateOpen(), SoundSource.BLOCKS, 1.0F, level.getRandom().nextFloat() * 0.1F + 0.9F);
+         level.gameEvent(open ? GameEvent.BLOCK_CLOSE : GameEvent.BLOCK_OPEN, pos, GameEvent.Context.of(state));
+      }
+
+      super.onExplosionHit(state, level, pos, explosion, onHit);
+   }
+
+   protected void neighborChanged(final BlockState state, final Level level, final BlockPos pos, final Block block, final @Nullable Orientation orientation, final boolean movedByPiston) {
+      if (!level.isClientSide()) {
+         boolean hasPower = level.hasNeighborSignal(pos);
+         if ((Boolean)state.getValue(POWERED) != hasPower) {
+            level.setBlock(pos, (BlockState)((BlockState)state.setValue(POWERED, hasPower)).setValue(OPEN, hasPower), 2);
+            if ((Boolean)state.getValue(OPEN) != hasPower) {
+               level.playSound((Entity)null, (BlockPos)pos, hasPower ? this.type.fenceGateOpen() : this.type.fenceGateClose(), SoundSource.BLOCKS, 1.0F, level.getRandom().nextFloat() * 0.1F + 0.9F);
+               level.gameEvent((Entity)null, hasPower ? GameEvent.BLOCK_OPEN : GameEvent.BLOCK_CLOSE, pos);
+            }
+         }
+
+      }
+   }
+
+   protected void createBlockStateDefinition(final StateDefinition.Builder<Block, BlockState> builder) {
+      builder.add(FACING, OPEN, POWERED, IN_WALL);
+   }
+
+   public static boolean connectsToDirection(final BlockState state, final Direction direction) {
+      return ((Direction)state.getValue(FACING)).getAxis() == direction.getClockWise().getAxis();
+   }
+
+   static {
+      OPEN = BlockStateProperties.OPEN;
+      POWERED = BlockStateProperties.POWERED;
+      IN_WALL = BlockStateProperties.IN_WALL;
+      SHAPES = Shapes.rotateHorizontalAxis(Block.cube((double)16.0F, (double)16.0F, (double)4.0F));
+      SHAPES_WALL = Maps.newEnumMap(Util.mapValues(SHAPES, (v) -> Shapes.join(v, Block.column((double)16.0F, (double)13.0F, (double)16.0F), BooleanOp.ONLY_FIRST)));
+      SHAPE_COLLISION = Shapes.rotateHorizontalAxis(Block.column((double)16.0F, (double)4.0F, (double)0.0F, (double)24.0F));
+      SHAPE_SUPPORT = Shapes.rotateHorizontalAxis(Block.column((double)16.0F, (double)4.0F, (double)5.0F, (double)24.0F));
+      SHAPE_OCCLUSION = Shapes.rotateHorizontalAxis(Shapes.or(Block.box((double)0.0F, (double)5.0F, (double)7.0F, (double)2.0F, (double)16.0F, (double)9.0F), Block.box((double)14.0F, (double)5.0F, (double)7.0F, (double)16.0F, (double)16.0F, (double)9.0F)));
+      SHAPE_OCCLUSION_WALL = Maps.newEnumMap(Util.mapValues(SHAPE_OCCLUSION, (v) -> v.move((double)0.0F, (double)-0.1875F, (double)0.0F).optimize()));
+   }
+}

@@ -1,0 +1,61 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.stats.Stats;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.entity.SmokerBlockEntity;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import org.jspecify.annotations.Nullable;
+
+public class SmokerBlock extends AbstractFurnaceBlock {
+   public static final MapCodec<SmokerBlock> CODEC = simpleCodec(SmokerBlock::new);
+
+   public MapCodec<SmokerBlock> codec() {
+      return CODEC;
+   }
+
+   protected SmokerBlock(final BlockBehaviour.Properties properties) {
+      super(properties);
+   }
+
+   public BlockEntity newBlockEntity(final BlockPos worldPosition, final BlockState blockState) {
+      return new SmokerBlockEntity(worldPosition, blockState);
+   }
+
+   public <T extends BlockEntity> @Nullable BlockEntityTicker<T> getTicker(final Level level, final BlockState blockState, final BlockEntityType<T> type) {
+      return createFurnaceTicker(level, type, BlockEntityType.SMOKER);
+   }
+
+   protected void openContainer(final Level level, final BlockPos pos, final Player player) {
+      BlockEntity blockEntity = level.getBlockEntity(pos);
+      if (blockEntity instanceof SmokerBlockEntity) {
+         player.openMenu((MenuProvider)blockEntity);
+         player.awardStat(Stats.INTERACT_WITH_SMOKER);
+      }
+
+   }
+
+   public void animateTick(final BlockState state, final Level level, final BlockPos pos, final RandomSource random) {
+      if ((Boolean)state.getValue(LIT)) {
+         double x = (double)pos.getX() + (double)0.5F;
+         double y = (double)pos.getY();
+         double z = (double)pos.getZ() + (double)0.5F;
+         if (random.nextDouble() < 0.1) {
+            level.playLocalSound(x, y, z, SoundEvents.SMOKER_SMOKE, SoundSource.BLOCKS, 1.0F, 1.0F, false);
+         }
+
+         level.addParticle(ParticleTypes.SMOKE, x, y + 1.1, z, (double)0.0F, (double)0.0F, (double)0.0F);
+      }
+   }
+}

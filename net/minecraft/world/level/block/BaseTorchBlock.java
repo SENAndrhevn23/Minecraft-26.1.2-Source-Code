@@ -1,0 +1,35 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ScheduledTickAccess;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+public abstract class BaseTorchBlock extends Block {
+   private static final VoxelShape SHAPE = Block.column((double)4.0F, (double)0.0F, (double)10.0F);
+
+   protected BaseTorchBlock(final BlockBehaviour.Properties properties) {
+      super(properties);
+   }
+
+   protected abstract MapCodec<? extends BaseTorchBlock> codec();
+
+   protected VoxelShape getShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      return SHAPE;
+   }
+
+   protected BlockState updateShape(final BlockState state, final LevelReader level, final ScheduledTickAccess ticks, final BlockPos pos, final Direction directionToNeighbour, final BlockPos neighbourPos, final BlockState neighbourState, final RandomSource random) {
+      return directionToNeighbour == Direction.DOWN && !this.canSurvive(state, level, pos) ? Blocks.AIR.defaultBlockState() : super.updateShape(state, level, ticks, pos, directionToNeighbour, neighbourPos, neighbourState, random);
+   }
+
+   protected boolean canSurvive(final BlockState state, final LevelReader level, final BlockPos pos) {
+      return canSupportCenter(level, pos.below(), Direction.UP);
+   }
+}

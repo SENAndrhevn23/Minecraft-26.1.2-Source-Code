@@ -1,0 +1,93 @@
+package net.minecraft.world.level.block;
+
+import com.google.common.base.Predicates;
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.pattern.BlockInWorld;
+import net.minecraft.world.level.block.state.pattern.BlockPattern;
+import net.minecraft.world.level.block.state.pattern.BlockPatternBuilder;
+import net.minecraft.world.level.block.state.predicate.BlockStatePredicate;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.block.state.properties.EnumProperty;
+import net.minecraft.world.level.pathfinder.PathComputationType;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+import org.jspecify.annotations.Nullable;
+
+public class EndPortalFrameBlock extends Block {
+   public static final MapCodec<EndPortalFrameBlock> CODEC = simpleCodec(EndPortalFrameBlock::new);
+   public static final EnumProperty<Direction> FACING;
+   public static final BooleanProperty HAS_EYE;
+   private static final VoxelShape SHAPE_EMPTY;
+   private static final VoxelShape SHAPE_FULL;
+   private static @Nullable BlockPattern portalShape;
+
+   public MapCodec<EndPortalFrameBlock> codec() {
+      return CODEC;
+   }
+
+   public EndPortalFrameBlock(final BlockBehaviour.Properties properties) {
+      super(properties);
+      this.registerDefaultState((BlockState)((BlockState)((BlockState)this.stateDefinition.any()).setValue(FACING, Direction.NORTH)).setValue(HAS_EYE, false));
+   }
+
+   protected boolean useShapeForLightOcclusion(final BlockState state) {
+      return true;
+   }
+
+   protected VoxelShape getShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      return (Boolean)state.getValue(HAS_EYE) ? SHAPE_FULL : SHAPE_EMPTY;
+   }
+
+   public BlockState getStateForPlacement(final BlockPlaceContext context) {
+      return (BlockState)((BlockState)this.defaultBlockState().setValue(FACING, context.getHorizontalDirection().getOpposite())).setValue(HAS_EYE, false);
+   }
+
+   protected boolean hasAnalogOutputSignal(final BlockState state) {
+      return true;
+   }
+
+   protected int getAnalogOutputSignal(final BlockState state, final Level level, final BlockPos pos, final Direction direction) {
+      return (Boolean)state.getValue(HAS_EYE) ? 15 : 0;
+   }
+
+   protected BlockState rotate(final BlockState state, final Rotation rotation) {
+      return (BlockState)state.setValue(FACING, rotation.rotate((Direction)state.getValue(FACING)));
+   }
+
+   protected BlockState mirror(final BlockState state, final Mirror mirror) {
+      return state.rotate(mirror.getRotation((Direction)state.getValue(FACING)));
+   }
+
+   protected void createBlockStateDefinition(final StateDefinition.Builder<Block, BlockState> builder) {
+      builder.add(FACING, HAS_EYE);
+   }
+
+   public static BlockPattern getOrCreatePortalShape() {
+      if (portalShape == null) {
+         portalShape = BlockPatternBuilder.start().aisle("?vvv?", ">???<", ">???<", ">???<", "?^^^?").where('?', BlockInWorld.hasState(BlockStatePredicate.ANY)).where('^', BlockInWorld.hasState(BlockStatePredicate.forBlock(Blocks.END_PORTAL_FRAME).where(HAS_EYE, Predicates.equalTo(true)).where(FACING, Predicates.equalTo(Direction.SOUTH)))).where('>', BlockInWorld.hasState(BlockStatePredicate.forBlock(Blocks.END_PORTAL_FRAME).where(HAS_EYE, Predicates.equalTo(true)).where(FACING, Predicates.equalTo(Direction.WEST)))).where('v', BlockInWorld.hasState(BlockStatePredicate.forBlock(Blocks.END_PORTAL_FRAME).where(HAS_EYE, Predicates.equalTo(true)).where(FACING, Predicates.equalTo(Direction.NORTH)))).where('<', BlockInWorld.hasState(BlockStatePredicate.forBlock(Blocks.END_PORTAL_FRAME).where(HAS_EYE, Predicates.equalTo(true)).where(FACING, Predicates.equalTo(Direction.EAST)))).build();
+      }
+
+      return portalShape;
+   }
+
+   protected boolean isPathfindable(final BlockState state, final PathComputationType type) {
+      return false;
+   }
+
+   static {
+      FACING = HorizontalDirectionalBlock.FACING;
+      HAS_EYE = BlockStateProperties.EYE;
+      SHAPE_EMPTY = Block.column((double)16.0F, (double)0.0F, (double)13.0F);
+      SHAPE_FULL = Shapes.or(SHAPE_EMPTY, Block.column((double)8.0F, (double)13.0F, (double)16.0F));
+   }
+}

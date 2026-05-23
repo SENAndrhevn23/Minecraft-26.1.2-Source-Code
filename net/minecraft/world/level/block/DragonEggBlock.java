@@ -1,0 +1,85 @@
+package net.minecraft.world.level.block;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.border.WorldBorder;
+import net.minecraft.world.level.pathfinder.PathComputationType;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+public class DragonEggBlock extends FallingBlock {
+   public static final MapCodec<DragonEggBlock> CODEC = simpleCodec(DragonEggBlock::new);
+   private static final VoxelShape SHAPE = Block.column((double)14.0F, (double)0.0F, (double)16.0F);
+
+   public MapCodec<DragonEggBlock> codec() {
+      return CODEC;
+   }
+
+   public DragonEggBlock(final BlockBehaviour.Properties properties) {
+      super(properties);
+   }
+
+   protected VoxelShape getShape(final BlockState state, final BlockGetter level, final BlockPos pos, final CollisionContext context) {
+      return SHAPE;
+   }
+
+   protected InteractionResult useWithoutItem(final BlockState state, final Level level, final BlockPos pos, final Player player, final BlockHitResult hitResult) {
+      this.teleport(state, level, pos);
+      return InteractionResult.SUCCESS;
+   }
+
+   protected void attack(final BlockState state, final Level level, final BlockPos pos, final Player player) {
+      this.teleport(state, level, pos);
+   }
+
+   private void teleport(final BlockState state, final Level level, final BlockPos pos) {
+      WorldBorder worldBorder = level.getWorldBorder();
+      RandomSource random = level.getRandom();
+
+      for(int i = 0; i < 1000; ++i) {
+         BlockPos testPos = pos.offset(random.nextInt(16) - random.nextInt(16), random.nextInt(8) - random.nextInt(8), random.nextInt(16) - random.nextInt(16));
+         if (level.getBlockState(testPos).isAir() && !level.getBlockState(testPos.below()).isAir() && worldBorder.isWithinBounds(testPos) && level.isInsideBuildHeight(testPos)) {
+            if (level.isClientSide()) {
+               for(int j = 0; j < 128; ++j) {
+                  double d = random.nextDouble();
+                  float xa = (random.nextFloat() - 0.5F) * 0.2F;
+                  float ya = (random.nextFloat() - 0.5F) * 0.2F;
+                  float za = (random.nextFloat() - 0.5F) * 0.2F;
+                  double x = Mth.lerp(d, (double)testPos.getX(), (double)pos.getX()) + (random.nextDouble() - (double)0.5F) + (double)0.5F;
+                  double y = Mth.lerp(d, (double)testPos.getY(), (double)pos.getY()) + random.nextDouble() - (double)0.5F;
+                  double z = Mth.lerp(d, (double)testPos.getZ(), (double)pos.getZ()) + (random.nextDouble() - (double)0.5F) + (double)0.5F;
+                  level.addParticle(ParticleTypes.PORTAL, x, y, z, (double)xa, (double)ya, (double)za);
+               }
+            } else {
+               level.setBlock(testPos, state, 2);
+               level.removeBlock(pos, false);
+            }
+
+            return;
+         }
+      }
+
+   }
+
+   protected int getDelayAfterPlace() {
+      return 5;
+   }
+
+   protected boolean isPathfindable(final BlockState state, final PathComputationType type) {
+      return false;
+   }
+
+   public int getDustColor(final BlockState blockState, final BlockGetter level, final BlockPos pos) {
+      return -16777216;
+   }
+}

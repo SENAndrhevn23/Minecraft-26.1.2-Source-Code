@@ -1,0 +1,325 @@
+package net.minecraft.world.level.levelgen;
+
+import java.util.Arrays;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.BiomeManager;
+import net.minecraft.world.level.biome.Biomes;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.BlockColumn;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.levelgen.carver.CarvingContext;
+import net.minecraft.world.level.levelgen.synth.NormalNoise;
+
+public class SurfaceSystem {
+   private static final BlockState WHITE_TERRACOTTA;
+   private static final BlockState ORANGE_TERRACOTTA;
+   private static final BlockState TERRACOTTA;
+   private static final BlockState YELLOW_TERRACOTTA;
+   private static final BlockState BROWN_TERRACOTTA;
+   private static final BlockState RED_TERRACOTTA;
+   private static final BlockState LIGHT_GRAY_TERRACOTTA;
+   private static final BlockState PACKED_ICE;
+   private static final BlockState SNOW_BLOCK;
+   private final BlockState defaultBlock;
+   private final int seaLevel;
+   private final BlockState[] clayBands;
+   private final NormalNoise clayBandsOffsetNoise;
+   private final NormalNoise badlandsPillarNoise;
+   private final NormalNoise badlandsPillarRoofNoise;
+   private final NormalNoise badlandsSurfaceNoise;
+   private final NormalNoise icebergPillarNoise;
+   private final NormalNoise icebergPillarRoofNoise;
+   private final NormalNoise icebergSurfaceNoise;
+   private final PositionalRandomFactory noiseRandom;
+   private final NormalNoise surfaceNoise;
+   private final NormalNoise surfaceSecondaryNoise;
+
+   public SurfaceSystem(final RandomState randomState, final BlockState defaultBlock, final int seaLevel, final PositionalRandomFactory noiseRandom) {
+      this.defaultBlock = defaultBlock;
+      this.seaLevel = seaLevel;
+      this.noiseRandom = noiseRandom;
+      this.clayBandsOffsetNoise = randomState.getOrCreateNoise(Noises.CLAY_BANDS_OFFSET);
+      this.clayBands = generateBands(noiseRandom.fromHashOf(Identifier.withDefaultNamespace("clay_bands")));
+      this.surfaceNoise = randomState.getOrCreateNoise(Noises.SURFACE);
+      this.surfaceSecondaryNoise = randomState.getOrCreateNoise(Noises.SURFACE_SECONDARY);
+      this.badlandsPillarNoise = randomState.getOrCreateNoise(Noises.BADLANDS_PILLAR);
+      this.badlandsPillarRoofNoise = randomState.getOrCreateNoise(Noises.BADLANDS_PILLAR_ROOF);
+      this.badlandsSurfaceNoise = randomState.getOrCreateNoise(Noises.BADLANDS_SURFACE);
+      this.icebergPillarNoise = randomState.getOrCreateNoise(Noises.ICEBERG_PILLAR);
+      this.icebergPillarRoofNoise = randomState.getOrCreateNoise(Noises.ICEBERG_PILLAR_ROOF);
+      this.icebergSurfaceNoise = randomState.getOrCreateNoise(Noises.ICEBERG_SURFACE);
+   }
+
+   public void buildSurface(final RandomState randomState, final BiomeManager biomeManager, final Registry<Biome> biomes, final boolean useLegacyRandom, final WorldGenerationContext generationContext, final ChunkAccess protoChunk, final NoiseChunk noiseChunk, final SurfaceRules.RuleSource ruleSource) {
+      final BlockPos.MutableBlockPos columnPos = new BlockPos.MutableBlockPos();
+      final ChunkPos chunkPos = protoChunk.getPos();
+      int minBlockX = chunkPos.getMinBlockX();
+      int minBlockZ = chunkPos.getMinBlockZ();
+      BlockColumn column = new BlockColumn() {
+         {
+            Objects.requireNonNull(SurfaceSystem.this);
+         }
+
+         public BlockState getBlock(final int blockY) {
+            return protoChunk.getBlockState(columnPos.setY(blockY));
+         }
+
+         public void setBlock(final int blockY, final BlockState state) {
+            LevelHeightAccessor heightAccessor = protoChunk.getHeightAccessorForGeneration();
+            if (heightAccessor.isInsideBuildHeight(blockY)) {
+               protoChunk.setBlockState(columnPos.setY(blockY), state);
+               if (!state.getFluidState().isEmpty()) {
+                  protoChunk.markPosForPostprocessing(columnPos);
+               }
+            }
+
+         }
+
+         public String toString() {
+            return "ChunkBlockColumn " + String.valueOf(chunkPos);
+         }
+      };
+      Objects.requireNonNull(biomeManager);
+      SurfaceRules.Context context = new SurfaceRules.Context(this, randomState, protoChunk, noiseChunk, biomeManager::getBiome, biomes, generationContext);
+      SurfaceRules.SurfaceRule rule = (SurfaceRules.SurfaceRule)ruleSource.apply(context);
+      BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
+
+      for(int x = 0; x < 16; ++x) {
+         for(int z = 0; z < 16; ++z) {
+            int blockX = minBlockX + x;
+            int blockZ = minBlockZ + z;
+            int startingHeight = protoChunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z) + 1;
+            columnPos.setX(blockX).setZ(blockZ);
+            Holder<Biome> surfaceBiome = biomeManager.getBiome(blockPos.set(blockX, useLegacyRandom ? 0 : startingHeight, blockZ));
+            if (surfaceBiome.is(Biomes.ERODED_BADLANDS)) {
+               this.erodedBadlandsExtension(column, blockX, blockZ, startingHeight, protoChunk);
+            }
+
+            int height = protoChunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z) + 1;
+            context.updateXZ(blockX, blockZ);
+            int stoneAboveDepth = 0;
+            int waterHeight = Integer.MIN_VALUE;
+            int nextCeilingStoneY = Integer.MAX_VALUE;
+            int endY = protoChunk.getMinY();
+
+            for(int y = height; y >= endY; --y) {
+               BlockState old = column.getBlock(y);
+               if (old.isAir()) {
+                  stoneAboveDepth = 0;
+                  waterHeight = Integer.MIN_VALUE;
+               } else if (!old.getFluidState().isEmpty()) {
+                  if (waterHeight == Integer.MIN_VALUE) {
+                     waterHeight = y + 1;
+                  }
+               } else {
+                  if (nextCeilingStoneY >= y) {
+                     nextCeilingStoneY = DimensionType.WAY_BELOW_MIN_Y;
+
+                     for(int lookaheadY = y - 1; lookaheadY >= endY - 1; --lookaheadY) {
+                        BlockState nextState = column.getBlock(lookaheadY);
+                        if (!this.isStone(nextState)) {
+                           nextCeilingStoneY = lookaheadY + 1;
+                           break;
+                        }
+                     }
+                  }
+
+                  ++stoneAboveDepth;
+                  int stoneBelowDepth = y - nextCeilingStoneY + 1;
+                  context.updateY(stoneAboveDepth, stoneBelowDepth, waterHeight, blockX, y, blockZ);
+                  if (old == this.defaultBlock) {
+                     BlockState state = rule.tryApply(blockX, y, blockZ);
+                     if (state != null) {
+                        column.setBlock(y, state);
+                     }
+                  }
+               }
+            }
+
+            if (surfaceBiome.is(Biomes.FROZEN_OCEAN) || surfaceBiome.is(Biomes.DEEP_FROZEN_OCEAN)) {
+               this.frozenOceanExtension(context.getMinSurfaceLevel(), surfaceBiome.value(), column, blockPos, blockX, blockZ, startingHeight);
+            }
+         }
+      }
+
+   }
+
+   protected int getSurfaceDepth(final int blockX, final int blockZ) {
+      double noiseValue = this.surfaceNoise.getValue((double)blockX, (double)0.0F, (double)blockZ);
+      return (int)(noiseValue * (double)2.75F + (double)3.0F + this.noiseRandom.at(blockX, 0, blockZ).nextDouble() * (double)0.25F);
+   }
+
+   protected double getSurfaceSecondary(final int blockX, final int blockZ) {
+      return this.surfaceSecondaryNoise.getValue((double)blockX, (double)0.0F, (double)blockZ);
+   }
+
+   private boolean isStone(final BlockState state) {
+      return !state.isAir() && state.getFluidState().isEmpty();
+   }
+
+   public int getSeaLevel() {
+      return this.seaLevel;
+   }
+
+   /** @deprecated */
+   @Deprecated
+   public Optional<BlockState> topMaterial(final SurfaceRules.RuleSource ruleSource, final CarvingContext carvingContext, final Function<BlockPos, Holder<Biome>> biomeGetter, final ChunkAccess chunk, final NoiseChunk noiseChunk, final BlockPos pos, final boolean underFluid) {
+      SurfaceRules.Context context = new SurfaceRules.Context(this, carvingContext.randomState(), chunk, noiseChunk, biomeGetter, carvingContext.registryAccess().lookupOrThrow(Registries.BIOME), carvingContext);
+      SurfaceRules.SurfaceRule rule = (SurfaceRules.SurfaceRule)ruleSource.apply(context);
+      int blockX = pos.getX();
+      int blockY = pos.getY();
+      int blockZ = pos.getZ();
+      context.updateXZ(blockX, blockZ);
+      context.updateY(1, 1, underFluid ? blockY + 1 : Integer.MIN_VALUE, blockX, blockY, blockZ);
+      BlockState state = rule.tryApply(blockX, blockY, blockZ);
+      return Optional.ofNullable(state);
+   }
+
+   private void erodedBadlandsExtension(final BlockColumn column, final int blockX, final int blockZ, final int height, final LevelHeightAccessor protoChunk) {
+      double pillarNoiseScale = 0.2;
+      double pillarBuffer = Math.min(Math.abs(this.badlandsSurfaceNoise.getValue((double)blockX, (double)0.0F, (double)blockZ) * (double)8.25F), this.badlandsPillarNoise.getValue((double)blockX * 0.2, (double)0.0F, (double)blockZ * 0.2) * (double)15.0F);
+      if (!(pillarBuffer <= (double)0.0F)) {
+         double floorNoiseSampleResolution = (double)0.75F;
+         double floorAmplitude = (double)1.5F;
+         double pillarFloor = Math.abs(this.badlandsPillarRoofNoise.getValue((double)blockX * (double)0.75F, (double)0.0F, (double)blockZ * (double)0.75F) * (double)1.5F);
+         double extensionTop = (double)64.0F + Math.min(pillarBuffer * pillarBuffer * (double)2.5F, Math.ceil(pillarFloor * (double)50.0F) + (double)24.0F);
+         int startY = Mth.floor(extensionTop);
+         if (height <= startY) {
+            for(int y = startY; y >= protoChunk.getMinY(); --y) {
+               BlockState oldState = column.getBlock(y);
+               if (oldState.is(this.defaultBlock.getBlock())) {
+                  break;
+               }
+
+               if (oldState.is(Blocks.WATER)) {
+                  return;
+               }
+            }
+
+            for(int y = startY; y >= protoChunk.getMinY() && column.getBlock(y).isAir(); --y) {
+               column.setBlock(y, this.defaultBlock);
+            }
+
+         }
+      }
+   }
+
+   private void frozenOceanExtension(final int minSurfaceLevel, final Biome surfaceBiome, final BlockColumn column, final BlockPos.MutableBlockPos blockPos, final int blockX, final int blockZ, final int height) {
+      double pillarScale = 1.28;
+      double iceberg = Math.min(Math.abs(this.icebergSurfaceNoise.getValue((double)blockX, (double)0.0F, (double)blockZ) * (double)8.25F), this.icebergPillarNoise.getValue((double)blockX * 1.28, (double)0.0F, (double)blockZ * 1.28) * (double)15.0F);
+      if (!(iceberg <= 1.8)) {
+         double roofScale = 1.17;
+         double roofAmplitude = (double)1.5F;
+         double icebergRoof = Math.abs(this.icebergPillarRoofNoise.getValue((double)blockX * 1.17, (double)0.0F, (double)blockZ * 1.17) * (double)1.5F);
+         double top = Math.min(iceberg * iceberg * 1.2, Math.ceil(icebergRoof * (double)40.0F) + (double)14.0F);
+         if (surfaceBiome.shouldMeltFrozenOceanIcebergSlightly(blockPos.set(blockX, this.seaLevel, blockZ), this.seaLevel)) {
+            top -= (double)2.0F;
+         }
+
+         double extensionBottom;
+         if (top > (double)2.0F) {
+            extensionBottom = (double)this.seaLevel - top - (double)7.0F;
+            top += (double)this.seaLevel;
+         } else {
+            top = (double)0.0F;
+            extensionBottom = (double)0.0F;
+         }
+
+         double extensionTop = top;
+         RandomSource random = this.noiseRandom.at(blockX, 0, blockZ);
+         int maxSnowDepth = 2 + random.nextInt(4);
+         int minSnowHeight = this.seaLevel + 18 + random.nextInt(10);
+         int snowDepth = 0;
+
+         for(int y = Math.max(height, (int)top + 1); y >= minSurfaceLevel; --y) {
+            if (column.getBlock(y).isAir() && y < (int)extensionTop && random.nextDouble() > 0.01 || column.getBlock(y).is(Blocks.WATER) && y > (int)extensionBottom && y < this.seaLevel && extensionBottom != (double)0.0F && random.nextDouble() > 0.15) {
+               if (snowDepth <= maxSnowDepth && y > minSnowHeight) {
+                  column.setBlock(y, SNOW_BLOCK);
+                  ++snowDepth;
+               } else {
+                  column.setBlock(y, PACKED_ICE);
+               }
+            }
+         }
+
+      }
+   }
+
+   private static BlockState[] generateBands(final RandomSource random) {
+      BlockState[] clayBands = new BlockState[192];
+      Arrays.fill(clayBands, TERRACOTTA);
+
+      for(int i = 0; i < clayBands.length; ++i) {
+         i += random.nextInt(5) + 1;
+         if (i < clayBands.length) {
+            clayBands[i] = ORANGE_TERRACOTTA;
+         }
+      }
+
+      makeBands(random, clayBands, 1, YELLOW_TERRACOTTA);
+      makeBands(random, clayBands, 2, BROWN_TERRACOTTA);
+      makeBands(random, clayBands, 1, RED_TERRACOTTA);
+      int whiteBandCount = random.nextIntBetweenInclusive(9, 15);
+      int i = 0;
+
+      for(int start = 0; i < whiteBandCount && start < clayBands.length; start += random.nextInt(16) + 4) {
+         clayBands[start] = WHITE_TERRACOTTA;
+         if (start - 1 > 0 && random.nextBoolean()) {
+            clayBands[start - 1] = LIGHT_GRAY_TERRACOTTA;
+         }
+
+         if (start + 1 < clayBands.length && random.nextBoolean()) {
+            clayBands[start + 1] = LIGHT_GRAY_TERRACOTTA;
+         }
+
+         ++i;
+      }
+
+      return clayBands;
+   }
+
+   private static void makeBands(final RandomSource random, final BlockState[] clayBands, final int baseWidth, final BlockState state) {
+      int bandCount = random.nextIntBetweenInclusive(6, 15);
+
+      for(int i = 0; i < bandCount; ++i) {
+         int width = baseWidth + random.nextInt(3);
+         int start = random.nextInt(clayBands.length);
+
+         for(int p = 0; start + p < clayBands.length && p < width; ++p) {
+            clayBands[start + p] = state;
+         }
+      }
+
+   }
+
+   protected BlockState getBand(final int worldX, final int y, final int worldZ) {
+      int offset = (int)Math.round(this.clayBandsOffsetNoise.getValue((double)worldX, (double)0.0F, (double)worldZ) * (double)4.0F);
+      return this.clayBands[(y + offset + this.clayBands.length) % this.clayBands.length];
+   }
+
+   static {
+      WHITE_TERRACOTTA = Blocks.WHITE_TERRACOTTA.defaultBlockState();
+      ORANGE_TERRACOTTA = Blocks.ORANGE_TERRACOTTA.defaultBlockState();
+      TERRACOTTA = Blocks.TERRACOTTA.defaultBlockState();
+      YELLOW_TERRACOTTA = Blocks.YELLOW_TERRACOTTA.defaultBlockState();
+      BROWN_TERRACOTTA = Blocks.BROWN_TERRACOTTA.defaultBlockState();
+      RED_TERRACOTTA = Blocks.RED_TERRACOTTA.defaultBlockState();
+      LIGHT_GRAY_TERRACOTTA = Blocks.LIGHT_GRAY_TERRACOTTA.defaultBlockState();
+      PACKED_ICE = Blocks.PACKED_ICE.defaultBlockState();
+      SNOW_BLOCK = Blocks.SNOW_BLOCK.defaultBlockState();
+   }
+}
